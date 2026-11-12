@@ -64,13 +64,18 @@ class AxmlParser(private val bytes: ByteArray) {
 
     fun parse(): AxmlNode {
         require(bytes.size >= 8) { "AXML bytes too short" }
+
+        // Check if standard binary AXML magic (0x00080003), or AAPT2 protobuf XML (e.g. from AAB bundles)
+        val peekMagic = (bytes[0].toInt() and 0xFF) or ((bytes[1].toInt() and 0xFF) shl 8)
+        if (peekMagic != RES_XML_TYPE) {
+            return ProtoXmlDecoder.decode(bytes)
+        }
+
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
 
         val fileType = buffer.short.toInt() and 0xFFFF
         val headerSize = buffer.short.toInt() and 0xFFFF
         val fileSize = buffer.int
-
-        require(fileType == RES_XML_TYPE) { "Invalid AXML magic: 0x${fileType.toString(16)}" }
 
         var stringPool: List<String> = emptyList()
         var resourceIds: List<Int> = emptyList()

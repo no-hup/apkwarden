@@ -19,6 +19,7 @@ class InsecureCryptoRule : Rule {
     override val id = "APK-SEC-011"
     override val name = "Insecure Cryptographic Cipher or Mode"
     override val description = "Application uses broken or weak cryptographic algorithms (DES, DESede) or insecure block cipher modes (AES/ECB) which do not provide semantic security."
+    override val targetSinks = setOf("getInstance")
 
     private val weakAlgorithms = listOf("DES", "DESede", "RC2", "RC4", "Blowfish", "PBEWithMD5AndDES")
 
@@ -87,6 +88,7 @@ class InsecureRandomRule : Rule {
     override val id = "APK-SEC-012"
     override val name = "Insecure Random Generator (java.util.Random)"
     override val description = "java.util.Random produces statistically predictable pseudo-random sequences and must not be used for cryptographic operations, token generation, or security nonces."
+    override val targetSinks = setOf("<init>")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -327,6 +329,7 @@ class WebViewSslBypassRule : Rule {
     override val id = "APK-SEC-021"
     override val name = "WebView SSL Error Bypassed (handler.proceed)"
     override val description = "Application's WebViewClient overrides onReceivedSslError and calls handler.proceed(), ignoring TLS/SSL certificate validation errors and enabling Man-in-the-Middle attacks."
+    override val targetSinks = setOf("proceed")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()

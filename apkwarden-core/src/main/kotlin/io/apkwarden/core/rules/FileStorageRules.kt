@@ -9,6 +9,7 @@ import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.dex.TaintSource
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 
 /**
@@ -19,14 +20,15 @@ class DirtyStreamTraversalRule : Rule {
     override val id = "APK-SEC-005"
     override val name = "Dirty Stream Path Traversal"
     override val description = "Application reads an incoming content stream via ContentResolver.openInputStream and writes to a destination file derived from Uri.getLastPathSegment() or displayName without canonical path validation, allowing file overwrite."
+    override val targetSinks = setOf("openInputStream")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
         val openStreamCalls = context.dexIndex.findCallSites("android.content.ContentResolver", "openInputStream")
 
         for (cs in openStreamCalls) {
-            val isExported = context.dexIndex.isReachableFromExportedComponent(cs.callerClass, context.attackSurface)
-            if (!isExported) continue
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
+            if (reachability == Reachability.UNREACHABLE) continue
 
             val analyzer = MethodAnalyzer(cs.method)
             val hasDisplayName = analyzer.containsStringLiteral { it == "_display_name" || it == "display_name" }
@@ -35,21 +37,44 @@ class DirtyStreamTraversalRule : Rule {
             val hasSanitization = analyzer.hasPathSanitization()
 
             if (hasLastPathSegment && !hasSanitization) {
+                val (title, severity, confidence, desc) = when (reachability) {
+                    Reachability.DIRECT -> Quadruple(
+                        "Dirty Stream File Overwrite Vulnerability",
+                        Severity.CRITICAL,
+                        Confidence.FIRM,
+                        "Exported class '${cs.callerClass}#${cs.callerMethod}' reads from an external Content Uri and writes to local disk using an unvalidated path segment without canonical path validation."
+                    )
+                    Reachability.REACHABLE -> Quadruple(
+                        "Dirty Stream File Overwrite Vulnerability via Reachable Component",
+                        Severity.HIGH,
+                        Confidence.FIRM,
+                        "Component '${cs.callerClass}#${cs.callerMethod}' is reachable from an exported component and writes Content Uri data without canonical path validation."
+                    )
+                    Reachability.UNKNOWN -> Quadruple(
+                        "Potential Dirty Stream File Overwrite (Indirect / Unknown Entry Point)",
+                        Severity.MEDIUM,
+                        Confidence.TENTATIVE,
+                        "Class '${cs.callerClass}#${cs.callerMethod}' reads from a Content Uri and writes to local disk without canonical path validation. An entry point from an exported component was not statically resolved within 3 hops, but this may be reachable dynamically."
+                    )
+                    Reachability.UNREACHABLE -> continue
+                }
+
                 findings.add(
                     Finding(
                         id = id,
-                        title = "Dirty Stream File Overwrite Vulnerability",
-                        severity = Severity.CRITICAL,
-                        confidence = Confidence.FIRM,
+                        title = title,
+                        severity = severity,
+                        confidence = confidence,
                         cwe = "CWE-22",
                         owasp = "M1: Insecure Data Storage",
-                        description = "Exported class '${cs.callerClass}#${cs.callerMethod}' reads from an external Content Uri and writes to local disk using an unvalidated path segment without canonical path validation.",
+                        description = desc,
                         remediation = "Sanitize the filename to strip directory traversal sequences: `val name = File(uri.lastPathSegment).name; val target = File(outputDir, name); if (!target.canonicalPath.startsWith(outputDir.canonicalPath)) throw SecurityException();`",
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
                         evidence = "Method calls openInputStream and Uri.getLastPathSegment() without File.getCanonicalPath()",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -66,6 +91,7 @@ class ZipSlipRule : Rule {
     override val id = "APK-SEC-006"
     override val name = "Zip Slip Path Traversal"
     override val description = "Unarchiving logic extracts zip entries using ZipEntry.getName() and writes to disk without verifying that the canonical destination path remains within the target extraction directory."
+    override val targetSinks = setOf("getNextEntry")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -110,6 +136,7 @@ class WorldReadableWritableRule : Rule {
     override val id = "APK-SEC-016"
     override val name = "World Readable or Writable File Creation"
     override val description = "Application creates files or shared preferences using deprecated MODE_WORLD_READABLE or MODE_WORLD_WRITEABLE flags, exposing local application storage to all other apps on device."
+    override val targetSinks = setOf("openFileOutput", "getSharedPreferences")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -173,6 +200,7 @@ class InsecureSharedPrefsRule : Rule {
     override val id = "APK-SEC-020"
     override val name = "Sensitive Token in Unencrypted SharedPreferences"
     override val description = "Application stores authentication tokens, credentials, or secrets in unencrypted SharedPreferences instead of EncryptedSharedPreferences."
+    override val targetSinks = setOf("putString")
 
     private val sensitiveKeywords = setOf("auth_token", "access_token", "jwt", "refresh_token", "password", "api_secret", "session_token")
 

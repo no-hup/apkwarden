@@ -11,6 +11,7 @@ import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
 import io.apkwarden.core.ingest.ApkArchive
 import io.apkwarden.core.model.AttackSurface
+import io.apkwarden.core.model.Reachability
 
 data class CallSite(
     val callerClass: String,
@@ -109,20 +110,20 @@ class DexIndex private constructor(
         return attackSurface.components.any { it.name == norm && it.exported }
     }
 
-    fun isReachableFromExportedComponent(
+    fun checkReachability(
         callerClass: String,
         attackSurface: AttackSurface,
-        maxHops: Int = 2
-    ): Boolean {
+        maxHops: Int = 3
+    ): Reachability {
         val normCaller = ClassHierarchy.normalizeType(callerClass)
         val exportedComponents = attackSurface.components
             .filter { it.exported }
             .flatMap { listOfNotNull(it.name, it.targetActivity) }
             .toSet()
 
-        if (exportedComponents.contains(normCaller)) return true
+        if (exportedComponents.contains(normCaller)) return Reachability.DIRECT
 
-        // Check 1-2 hop callers in call graph
+        // Check 1..maxHops in call graph
         var currentCallers = setOf(normCaller)
         val visited = mutableSetOf(normCaller)
 
@@ -131,7 +132,7 @@ class DexIndex private constructor(
             for (curr in currentCallers) {
                 val directCallers = callersByMethod[curr] ?: emptySet()
                 for (caller in directCallers) {
-                    if (exportedComponents.contains(caller)) return true
+                    if (exportedComponents.contains(caller)) return Reachability.REACHABLE
                     if (visited.add(caller)) {
                         nextCallers.add(caller)
                     }
@@ -141,13 +142,36 @@ class DexIndex private constructor(
             if (currentCallers.isEmpty()) break
         }
 
-        return false
+        // If callerClass is an Android component and not exported and not reachable from any exported component,
+        // it cannot be invoked directly by external callers.
+        val isAndroidComponent = hierarchy.isSubclassOf(callerClass, "android.app.Activity") ||
+                hierarchy.isSubclassOf(callerClass, "android.app.Service") ||
+                hierarchy.isSubclassOf(callerClass, "android.content.BroadcastReceiver") ||
+                hierarchy.isSubclassOf(callerClass, "android.content.ContentProvider")
+
+        val isKnownUnexported = attackSurface.components.any { it.name == normCaller && !it.exported } ||
+                (isAndroidComponent && !exportedComponents.contains(normCaller))
+
+        if (isKnownUnexported) {
+            return Reachability.UNREACHABLE
+        }
+
+        return Reachability.UNKNOWN
+    }
+
+    fun isReachableFromExportedComponent(
+        callerClass: String,
+        attackSurface: AttackSurface,
+        maxHops: Int = 3
+    ): Boolean {
+        val r = checkReachability(callerClass, attackSurface, maxHops)
+        return r == Reachability.DIRECT || r == Reachability.REACHABLE
     }
 
     companion object {
-        fun build(archive: ApkArchive): DexIndex {
+        fun build(archive: ApkArchive, targetSinks: Set<String> = emptySet()): DexIndex {
             val dexEntries = archive.listEntries().filter { entry ->
-                entry.endsWith(".dex") && (entry.startsWith("classes") || entry.contains("/dex/classes") || entry == "classes.dex")
+                entry.endsWith(".dex") && (entry.startsWith("classes") || entry.contains("/dex/classes") || entry.contains("classes") || entry == "classes.dex")
             }
 
             val classDefs = mutableMapOf<String, ClassDef>()
@@ -195,33 +219,40 @@ class DexIndex private constructor(
                                 when (val ref = instruction.reference) {
                                     is MethodReference -> {
                                         val targetClass = ClassHierarchy.normalizeType(ref.definingClass)
-                                        val targetKey = "$targetClass#${ref.name}"
-                                        val cs = CallSite(
-                                            callerClass = normClass,
-                                            callerMethod = method.name,
-                                            callerMethodSig = "(${method.parameterTypes.joinToString("")})${method.returnType}",
-                                            targetClass = targetClass,
-                                            targetMethod = ref.name,
-                                            targetSig = "(${ref.parameterTypes.joinToString("")})${ref.returnType}",
-                                            instructionIndex = instIdx,
-                                            instruction = instruction,
-                                            dexName = entryName,
-                                            method = method
-                                        )
-                                        callSitesByTarget.computeIfAbsent(targetKey) { mutableListOf() }.add(cs)
+                                        // Always index inter-class callers for reachability graph
                                         callersByMethod.computeIfAbsent(targetClass) { mutableSetOf() }.add(normClass)
+
+                                        // Selective sink indexing: only allocate CallSite if targetSinks is empty or contains ref.name
+                                        if (targetSinks.isEmpty() || targetSinks.contains(ref.name)) {
+                                            val targetKey = "$targetClass#${ref.name}"
+                                            val cs = CallSite(
+                                                callerClass = normClass,
+                                                callerMethod = method.name,
+                                                callerMethodSig = "(${method.parameterTypes.joinToString("")})${method.returnType}",
+                                                targetClass = targetClass,
+                                                targetMethod = ref.name,
+                                                targetSig = "(${ref.parameterTypes.joinToString("")})${ref.returnType}",
+                                                instructionIndex = instIdx,
+                                                instruction = instruction,
+                                                dexName = entryName,
+                                                method = method
+                                            )
+                                            callSitesByTarget.computeIfAbsent(targetKey) { mutableListOf() }.add(cs)
+                                        }
                                     }
                                     is StringReference -> {
                                         val str = ref.string
-                                        val so = StringOccurrence(
-                                            string = str,
-                                            callerClass = normClass,
-                                            callerMethod = method.name,
-                                            instructionIndex = instIdx,
-                                            dexName = entryName,
-                                            method = method
-                                        )
-                                        stringOccurrences.computeIfAbsent(str) { mutableListOf() }.add(so)
+                                        if (str.length >= 3) {
+                                            val so = StringOccurrence(
+                                                string = str,
+                                                callerClass = normClass,
+                                                callerMethod = method.name,
+                                                instructionIndex = instIdx,
+                                                dexName = entryName,
+                                                method = method
+                                            )
+                                            stringOccurrences.computeIfAbsent(str) { mutableListOf() }.add(so)
+                                        }
                                     }
                                     is FieldReference -> {
                                         val targetClass = ClassHierarchy.normalizeType(ref.definingClass)

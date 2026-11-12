@@ -518,4 +518,30 @@ class RulesEngineTest {
         val findings = IntentRedirectionRule().analyze(ctx)
         assertThat(findings).isEmpty()
     }
+
+    @Test
+    fun `downgrades intent redirection to MEDIUM with UNKNOWN reachability when caller is non-component helper`() {
+        val smali = """
+            .class public Lcom/example/DeepHelper;
+            .super Ljava/lang/Object;
+            
+            .method public static forward(Landroid/content/Context;Landroid/content/Intent;)V
+                .registers 4
+                const-string v0, "nested_intent"
+                invoke-virtual {p1, v0}, Landroid/content/Intent;->getParcelableExtra(Ljava/lang/String;)Landroid/os/Parcelable;
+                move-result-object v1
+                check-cast v1, Landroid/content/Intent;
+                invoke-virtual {p0, v1}, Landroid/content/Context;->startActivity(Landroid/content/Intent;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, exportedComponents = listOf("com.example.MainActivity"))
+        val findings = IntentRedirectionRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        val f = findings.first()
+        assertThat(f.reachability).isEqualTo(io.apkwarden.core.model.Reachability.UNKNOWN)
+        assertThat(f.severity).isEqualTo(io.apkwarden.core.model.Severity.MEDIUM)
+        assertThat(f.confidence).isEqualTo(io.apkwarden.core.model.Confidence.TENTATIVE)
+    }
 }

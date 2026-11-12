@@ -25,5 +25,9 @@ object RuleRegistry {
         WebViewSslBypassRule()
     )
 
+    val allTargetSinks: Set<String> by lazy {
+        allRules.flatMap { it.targetSinks }.toSet()
+    }
+
     fun getRuleById(id: String): Rule? = allRules.firstOrNull { it.id.equals(id, ignoreCase = true) }
 }

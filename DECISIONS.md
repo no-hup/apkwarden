@@ -121,4 +121,22 @@ This document tracks all major architectural decisions, trade-offs, and design r
   6. **Add Missing Critical SSL Rule:** Added `WebViewClient.onReceivedSslError` calling `handler.proceed()`.
 * **Decision:** Implemented these engine and rule precision enhancements across `MethodAnalyzer`, `DexIndex`, and the rules suite.
 
+---
+
+## ADR 011: Milestone 2.5 Hardening — Selective Sink Indexing, Reachability Triage, and Split Multi-DEX Isolation
+* **Date:** 2026-11-13
+* **Status:** Accepted
+* **Context:** A staff-level architecture review of large-scale production APK/AAB compatibility and reachability triage identified five structural improvements:
+  1. **Pipeline Unification:** `ScanEngine.scan(archive)` must delegate directly to `ApkAnalyzer.analyzeArchive(archive)`. This guarantees that manifest parsing, ARSC resource resolution (`@bool/x`, `values-v31`), lone-split checks, and stack fingerprinting are 100% consistent across `surface`, `lock`, and `scan`.
+  2. **Reachability Triage (`DIRECT`, `REACHABLE`, `UNKNOWN`, `UNREACHABLE`):** Rather than completely dropping findings when a call path is >2 hops away or routed via DI (Dagger/Hilt/ViewModel), findings are categorized with explicit reachability tags:
+     - `DIRECT`: Originates directly inside an exported component (CRITICAL/HIGH severity).
+     - `REACHABLE`: Statically proven reachable from an exported component within 3 hops (CRITICAL/HIGH severity).
+     - `UNKNOWN`: Dangerous sink with tainted inputs, but call graph cannot be statically resolved to an exported entry point (downgraded to MEDIUM severity, TENTATIVE confidence). Never hidden from developers, but prevents false blocks in strict CI gating.
+     - `UNREACHABLE`: Caller is an Android component explicitly declared unexported with no callers from exported components (suppressed).
+  3. **Selective Sink Indexing in `DexIndex`:** Across 150MB+ production APKs with hundreds of thousands of methods, allocating a `CallSite` object for every Dalvik invocation exhausts multi-gigabyte heaps. Rules now declare `val targetSinks: Set<String>`. `DexIndex.build` only allocates `CallSite` objects for registered sink method names (<25 distinct methods), while retaining the lightweight `callerClass -> targetClass` string graph for reachability traversal. Reduces index memory footprint by >90%.
+  4. **AAPT2 Protobuf XML Decoder for Android App Bundles (`.aab`):** In `.aab` archives, `base/manifest/AndroidManifest.xml` is encoded as an AAPT2 compiled protobuf message (`aapt.pb.XmlNode`), not binary AXML (`0x00080003`). Implemented a zero-dependency streaming protobuf decoder (`ProtoXmlDecoder`) integrated into `AxmlParser` that auto-detects and parses AAPT2 XML directly to `AxmlNode`.
+  5. **Split APK Multi-DEX Namespace Isolation:** Feature split APKs in split sets often contain conflicting `classes.dex` entries. `SplitApkCluster` now automatically namespaces split DEX entries (`split_${index}_classes.dex`) to ensure complete, collision-free multi-DEX indexing across base and feature splits.
+* **Decision:** Implemented these five architectural enhancements into `DexIndex`, `SplitApkCluster`, `ProtoXmlDecoder`, and the rules suite with comprehensive test coverage.
+
+
 

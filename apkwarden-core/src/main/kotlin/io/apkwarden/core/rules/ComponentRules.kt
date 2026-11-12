@@ -9,6 +9,7 @@ import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.dex.TaintSource
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 
 /**
@@ -19,6 +20,7 @@ class IntentRedirectionRule : Rule {
     override val id = "APK-SEC-001"
     override val name = "Intent Redirection"
     override val description = "Exported component receives an Intent and forwards it to startActivity, startService, or sendBroadcast without validating the destination component or package."
+    override val targetSinks = setOf("startActivity", "startActivityForResult", "startService", "sendBroadcast")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -30,8 +32,8 @@ class IntentRedirectionRule : Rule {
                 context.dexIndex.findCallSites("android.content.Context", "sendBroadcast")
 
         for (cs in startCallSites) {
-            val isExported = context.dexIndex.isReachableFromExportedComponent(cs.callerClass, context.attackSurface)
-            if (!isExported) continue
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
+            if (reachability == Reachability.UNREACHABLE) continue
 
             val analyzer = MethodAnalyzer(cs.method)
             // If the method verifies or sanitizes the Intent's component/package, suppress finding
@@ -48,21 +50,44 @@ class IntentRedirectionRule : Rule {
             }
 
             if (isTainted) {
+                val (title, severity, confidence, desc) = when (reachability) {
+                    Reachability.DIRECT -> Quadruple(
+                        "Intent Redirection in Exported Component",
+                        Severity.CRITICAL,
+                        Confidence.FIRM,
+                        "Exported class '${cs.callerClass}' forwards an Intent received from external callers directly to '${cs.targetMethod}' without verifying its target package or component."
+                    )
+                    Reachability.REACHABLE -> Quadruple(
+                        "Intent Redirection via Reachable Exported Component",
+                        Severity.HIGH,
+                        Confidence.FIRM,
+                        "Class '${cs.callerClass}' is reachable from an exported component and forwards an Intent received from callers to '${cs.targetMethod}' without verifying its target package or component."
+                    )
+                    Reachability.UNKNOWN -> Quadruple(
+                        "Potential Intent Redirection (Indirect / Unknown Entry Point)",
+                        Severity.MEDIUM,
+                        Confidence.TENTATIVE,
+                        "Class '${cs.callerClass}' forwards an Intent received from callers to '${cs.targetMethod}'. An entry point from an exported component was not statically resolved within 3 hops, but this may be reachable dynamically."
+                    )
+                    Reachability.UNREACHABLE -> continue
+                }
+
                 findings.add(
                     Finding(
                         id = id,
-                        title = "Intent Redirection in Exported Component",
-                        severity = Severity.CRITICAL,
-                        confidence = Confidence.FIRM,
+                        title = title,
+                        severity = severity,
+                        confidence = confidence,
                         cwe = "CWE-926",
                         owasp = "M4: Insufficient Input/Output Validation",
-                        description = "Exported class '${cs.callerClass}' forwards an Intent received from external callers directly to '${cs.targetMethod}' without verifying its target package or component.",
+                        description = desc,
                         remediation = "Validate that the forwarded Intent's component package matches your application: `if (forwardIntent.getComponent()?.getPackageName() == getPackageName()) { startActivity(forwardIntent); }` or use explicit Intents.",
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
                         evidence = "Call to ${cs.targetClass}#${cs.targetMethod} with tainted register v$intentReg ($regVal)",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -79,6 +104,7 @@ class MutablePendingIntentRule : Rule {
     override val id = "APK-SEC-002"
     override val name = "Mutable PendingIntent"
     override val description = "PendingIntent created without FLAG_IMMUTABLE (0x04000000) or explicitly using FLAG_MUTABLE (0x02000000) allows untrusted recipients to modify the intent's action, data, or flags."
+    override val targetSinks = setOf("getActivity", "getBroadcast", "getService", "getForegroundService")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -161,6 +187,7 @@ class ImplicitPendingIntentRule : Rule {
     override val id = "APK-SEC-003"
     override val name = "Implicit PendingIntent"
     override val description = "PendingIntent wraps an implicit Intent without explicit package or component specification, risking intent interception."
+    override val targetSinks = setOf("getActivity", "getBroadcast", "getService")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -220,6 +247,7 @@ class DynamicReceiverExportRule : Rule {
     override val id = "APK-SEC-004"
     override val name = "Dynamic BroadcastReceiver Missing Export Flag"
     override val description = "On Android 14+ (targetSdk >= 34), dynamically registered receivers must explicitly declare RECEIVER_EXPORTED (0x2) or RECEIVER_NOT_EXPORTED (0x4)."
+    override val targetSinks = setOf("registerReceiver")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         if (context.attackSurface.targetSdk < 34) return emptyList()

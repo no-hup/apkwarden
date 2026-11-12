@@ -17,5 +17,8 @@ interface Rule {
     val id: String
     val name: String
     val description: String
+    val targetSinks: Set<String> get() = emptySet()
     fun analyze(context: AnalysisContext): List<Finding>
 }
+
+internal data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)

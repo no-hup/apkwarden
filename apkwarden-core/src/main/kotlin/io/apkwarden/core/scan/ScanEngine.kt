@@ -1,47 +1,28 @@
 package io.apkwarden.core.scan
 
+import io.apkwarden.core.ApkAnalyzer
 import io.apkwarden.core.dex.DexIndex
-import io.apkwarden.core.fingerprint.StackFingerprinter
 import io.apkwarden.core.ingest.ApkArchive
 import io.apkwarden.core.model.*
-import io.apkwarden.core.parser.ArscParser
-import io.apkwarden.core.parser.AxmlParser
 import io.apkwarden.core.rules.AnalysisContext
 import io.apkwarden.core.rules.Rule
 import io.apkwarden.core.rules.RuleRegistry
-import io.apkwarden.core.surface.AttackSurfaceResolver
 import java.time.Instant
 
 class ScanEngine(private val rules: List<Rule> = RuleRegistry.allRules) {
 
     fun scan(archive: ApkArchive): ScanReport {
-        // 1. Parse manifest
-        val manifestBytes = archive.getEntryBytes("AndroidManifest.xml")
-            ?: throw IllegalArgumentException("Missing AndroidManifest.xml in ${archive.archiveName}")
-        val manifestNode = AxmlParser(manifestBytes).parse()
+        // 1. Unified analysis: Manifest, ARSC, Attack Surface, Fingerprint, Lockfile
+        val analysis = ApkAnalyzer.analyzeArchive(archive)
 
-        // 2. Parse ARSC if available
-        val arscBytes = archive.getEntryBytes("resources.arsc")
-        val arscParser = arscBytes?.let { ArscParser(it) }
+        // 2. Index DEX bytecode with target sink filtering
+        val dexIndex = DexIndex.build(archive, RuleRegistry.allTargetSinks)
 
-        // 3. Resolve Attack Surface
-        val surface = AttackSurfaceResolver(archive, manifestNode, arscParser).resolve()
-
-        // 4. Fingerprint stack & packers
-        val dexEntries = archive.listEntries().filter { entry ->
-            entry.endsWith(".dex") && (entry.startsWith("classes") || entry.contains("/dex/classes") || entry == "classes.dex")
-        }
-        val dexBytesList = dexEntries.mapNotNull { archive.getEntryBytes(it) }
-        val fingerprint = StackFingerprinter.fingerprint(archive, dexBytesList)
-
-        // 5. Index DEX bytecode
-        val dexIndex = DexIndex.build(archive)
-
-        // 6. Run Rules Engine
+        // 3. Run Rules Engine
         val context = AnalysisContext(
             archive = archive,
-            attackSurface = surface,
-            stackFingerprint = fingerprint,
+            attackSurface = analysis.attackSurface,
+            stackFingerprint = analysis.fingerprint,
             dexIndex = dexIndex
         )
 
@@ -50,20 +31,21 @@ class ScanEngine(private val rules: List<Rule> = RuleRegistry.allRules) {
             findings.addAll(rule.analyze(context))
         }
 
-        // 7. Calculate Summary & Security Score
+        // 4. Calculate Summary & Security Score
         val criticalCount = findings.count { it.severity == Severity.CRITICAL }
         val highCount = findings.count { it.severity == Severity.HIGH }
         val mediumCount = findings.count { it.severity == Severity.MEDIUM }
         val lowCount = findings.count { it.severity == Severity.LOW }
         val infoCount = findings.count { it.severity == Severity.INFO }
 
-        // Warnings collection
+        // Warnings collection from unified analysis and dex indexing
         val scanWarnings = mutableListOf<String>()
+        scanWarnings.addAll(analysis.warnings)
         scanWarnings.addAll(dexIndex.parsingErrors)
-        if (fingerprint.packer.detected) {
-            scanWarnings.add("PACKER DETECTED: Commercial protector '${fingerprint.packer.packerName}' detected. Bytecode analysis has reduced visibility (${fingerprint.coverageStatement.dexCoveragePct}% coverage).")
+        if (analysis.fingerprint.packer.detected) {
+            scanWarnings.add("PACKER DETECTED: Commercial protector '${analysis.fingerprint.packer.packerName}' detected. Bytecode analysis has reduced visibility (${analysis.fingerprint.coverageStatement.dexCoveragePct}% coverage).")
         }
-        scanWarnings.addAll(fingerprint.coverageStatement.blindSpots)
+        scanWarnings.addAll(analysis.fingerprint.coverageStatement.blindSpots)
 
         // Security score formula: Starts at 100, penalizes by severity
         val penalty = (criticalCount * 25) + (highCount * 15) + (mediumCount * 5) + (lowCount * 2)
@@ -82,8 +64,8 @@ class ScanEngine(private val rules: List<Rule> = RuleRegistry.allRules) {
         return ScanReport(
             apkName = archive.archiveName,
             scanTimestamp = Instant.now().toString(),
-            attackSurface = surface,
-            stackFingerprint = fingerprint,
+            attackSurface = analysis.attackSurface,
+            stackFingerprint = analysis.fingerprint,
             findings = findings.sortedWith(compareBy({ it.severity }, { it.id })),
             summary = summary,
             scanWarnings = scanWarnings

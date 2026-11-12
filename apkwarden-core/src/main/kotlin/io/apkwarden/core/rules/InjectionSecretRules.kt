@@ -14,6 +14,7 @@ class SqlInjectionRule : Rule {
     override val id = "APK-SEC-015"
     override val name = "SQL Injection in SQLite Query Execution"
     override val description = "Application constructs SQL query string using dynamic string concatenation before passing to SQLiteDatabase.rawQuery or execSQL instead of parameterized queries."
+    override val targetSinks = setOf("rawQuery", "execSQL")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()

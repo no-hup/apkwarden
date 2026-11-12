@@ -5,6 +5,7 @@ import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.dex.TaintSource
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 
 /**
@@ -15,6 +16,7 @@ class WebViewArbitraryUrlRule : Rule {
     override val id = "APK-SEC-007"
     override val name = "Untrusted Intent URL Loaded in WebView"
     override val description = "Exported component receives a URL from an incoming Intent and passes it directly to WebView.loadUrl without origin/domain validation."
+    override val targetSinks = setOf("loadUrl", "loadDataWithBaseURL")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -22,8 +24,8 @@ class WebViewArbitraryUrlRule : Rule {
                 context.dexIndex.findCallSites("android.webkit.WebView", "loadDataWithBaseURL")
 
         for (cs in loadUrlCalls) {
-            val isExported = context.dexIndex.isReachableFromExportedComponent(cs.callerClass, context.attackSurface)
-            if (!isExported) continue
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
+            if (reachability == Reachability.UNREACHABLE) continue
 
             val analyzer = MethodAnalyzer(cs.method)
             val args = analyzer.getInvocationArgs(cs.instruction)
@@ -43,21 +45,44 @@ class WebViewArbitraryUrlRule : Rule {
             }
 
             if (isTainted) {
+                val (title, severity, confidence, desc) = when (reachability) {
+                    Reachability.DIRECT -> Quadruple(
+                        "Arbitrary URL Loaded in WebView from Exported Component",
+                        Severity.HIGH,
+                        if (regVal is RegisterValue.Tainted) Confidence.CERTAIN else Confidence.FIRM,
+                        "Exported component '${cs.callerClass}' loads a URL derived from an untrusted Intent into WebView in method '${cs.callerMethod}'. Attackers can trigger this component with javascript:// or malicious web endpoints."
+                    )
+                    Reachability.REACHABLE -> Quadruple(
+                        "Arbitrary URL Loaded in WebView via Reachable Component",
+                        Severity.HIGH,
+                        Confidence.FIRM,
+                        "Component '${cs.callerClass}' is reachable from an exported component and loads an untrusted Intent URL into WebView in method '${cs.callerMethod}'."
+                    )
+                    Reachability.UNKNOWN -> Quadruple(
+                        "Potential Arbitrary URL Loaded in WebView (Indirect / Unknown Entry Point)",
+                        Severity.MEDIUM,
+                        Confidence.TENTATIVE,
+                        "Class '${cs.callerClass}' loads an untrusted URL into WebView in method '${cs.callerMethod}'. An entry point from an exported component was not statically resolved within 3 hops, but this may be reachable dynamically."
+                    )
+                    Reachability.UNREACHABLE -> continue
+                }
+
                 findings.add(
                     Finding(
                         id = id,
-                        title = "Arbitrary URL Loaded in WebView from Exported Component",
-                        severity = Severity.HIGH,
-                        confidence = if (regVal is RegisterValue.Tainted) Confidence.CERTAIN else Confidence.FIRM,
+                        title = title,
+                        severity = severity,
+                        confidence = confidence,
                         cwe = "CWE-79",
                         owasp = "M4: Insufficient Input/Output Validation",
-                        description = "Exported component '${cs.callerClass}' loads a URL derived from an untrusted Intent into WebView in method '${cs.callerMethod}'. Attackers can trigger this component with javascript:// or malicious web endpoints.",
+                        description = desc,
                         remediation = "Validate that the loaded URL strictly matches an allowed HTTPS domain whitelist before loading: `if (isValidDomain(url)) webView.loadUrl(url)`.",
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
                         evidence = "WebView.loadUrl invoked with tainted intent URL argument ($regVal)",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -74,6 +99,7 @@ class WebViewFileAccessRule : Rule {
     override val id = "APK-SEC-008"
     override val name = "Insecure WebView File Access Enabled"
     override val description = "WebSettings explicitly enables file access or cross-origin access from file URLs, allowing malicious web content or XSS to exfiltrate private app files."
+    override val targetSinks = setOf("setAllowFileAccess", "setAllowFileAccessFromFileURLs", "setAllowUniversalAccessFromFileURLs")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -127,6 +153,7 @@ class JavascriptInterfaceRule : Rule {
     override val id = "APK-SEC-009"
     override val name = "WebView JavaScript Interface Exposed"
     override val description = "Application attaches native Java objects to WebView via addJavascriptInterface. On minSdk < 17 this leads to remote code execution; on modern SDKs it exposes internal methods to web content."
+    override val targetSinks = setOf("addJavascriptInterface")
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()

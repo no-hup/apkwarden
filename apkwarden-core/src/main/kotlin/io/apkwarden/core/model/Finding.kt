@@ -19,6 +19,14 @@ enum class Confidence {
 }
 
 @Serializable
+enum class Reachability {
+    DIRECT,
+    REACHABLE,
+    UNKNOWN,
+    UNREACHABLE
+}
+
+@Serializable
 data class Finding(
     val id: String,
     val title: String,
@@ -32,7 +40,8 @@ data class Finding(
     val targetClass: String? = null,
     val targetMethod: String? = null,
     val evidence: String? = null,
-    val lineOrOffset: String? = null
+    val lineOrOffset: String? = null,
+    val reachability: Reachability = Reachability.DIRECT
 )
 
 @Serializable
