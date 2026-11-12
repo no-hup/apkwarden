@@ -82,6 +82,115 @@ class SampleGeneratorTest {
         }
     }
 
+    @Test
+    fun `generate sample safe apk for CLI testing`() {
+        val rootDir = File("..").canonicalFile
+        val samplesDir = File(rootDir, "samples").apply { mkdirs() }
+        val sampleApk = File(samplesDir, "sample-safe.apk")
+        sampleApk.delete()
+
+        val axml = createSampleSafeAxml()
+        val smali = """
+            .class public Lcom/example/safe/MainActivity;
+            .super Landroid/app/Activity;
+            .source "MainActivity.java"
+
+            .method public constructor <init>()V
+                .registers 1
+                invoke-direct {p0}, Landroid/app/Activity;-><init>()V
+                return-void
+            .end method
+
+            .method public onCreate(Landroid/os/Bundle;)V
+                .registers 5
+                # Secure AES-GCM cipher (not ECB)
+                const-string v0, "AES/GCM/NoPadding"
+                invoke-static {v0}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
+
+                # Explicit intent with explicit package
+                new-instance v0, Landroid/content/Intent;
+                const-class v1, Lcom/example/safe/MainActivity;
+                invoke-direct {v0, p0, v1}, Landroid/content/Intent;-><init>(Landroid/content/Context;Ljava/lang/Class;)V
+                const-string v1, "com.example.safe"
+                invoke-virtual {v0, v1}, Landroid/content/Intent;->setPackage(Ljava/lang/String;)Landroid/content/Intent;
+
+                # Immutable PendingIntent (FLAG_IMMUTABLE = 0x04000000)
+                const/4 v1, 0x0
+                const/high16 v2, 0x4000000
+                invoke-static {p0, v1, v0, v2}, Landroid/app/PendingIntent;->getActivity(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;
+
+                # Release mode R8 marker
+                const-string v0, "~~R8{backend:dex,compilation-mode:release,min-api:26,pg-map-id:release-map-001,version:8.4.10}"
+
+                return-void
+            .end method
+        """.trimIndent()
+        val dex = io.apkwarden.core.testutil.SmaliDexBuilder.assemble(smali)
+
+        FileOutputStream(sampleApk).use { fos ->
+            ZipOutputStream(fos).use { zos ->
+                zos.putNextEntry(ZipEntry("AndroidManifest.xml"))
+                zos.write(axml)
+                zos.closeEntry()
+
+                zos.putNextEntry(ZipEntry("classes.dex"))
+                zos.write(dex)
+                zos.closeEntry()
+            }
+        }
+    }
+
+    private fun createSampleSafeAxml(): ByteArray {
+        val strings = listOf(
+            "manifest",               // 0
+            "package",                // 1
+            "com.example.safe",       // 2
+            "uses-sdk",               // 3
+            "minSdkVersion",          // 4
+            "targetSdkVersion",       // 5
+            "application",            // 6
+            "allowBackup",            // 7
+            "activity",               // 8
+            "name",                   // 9
+            ".MainActivity",          // 10
+            "exported"                // 11
+        )
+
+        val stringPoolBytes = buildStringPool(strings)
+
+        val actAttr = ByteArrayOutputStream().apply {
+            writeAttr(this, -1, 9, 10, 0x03, 10)
+            writeAttr(this, -1, 11, -1, 0x12, 0) // exported=false
+        }.toByteArray()
+        val actElem = buildElementChunk(8, actAttr, 2, emptyList())
+
+        val appAttr = ByteArrayOutputStream().apply {
+            writeAttr(this, -1, 7, -1, 0x12, 0) // allowBackup=false
+        }.toByteArray()
+        val appElem = buildElementChunk(6, appAttr, 1, listOf(actElem))
+
+        val sdkAttr = ByteArrayOutputStream().apply {
+            writeAttr(this, -1, 4, -1, 0x10, 26) // minSdk=26
+            writeAttr(this, -1, 5, -1, 0x10, 34) // targetSdk=34
+        }.toByteArray()
+        val sdkElem = buildElementChunk(3, sdkAttr, 2, emptyList())
+
+        val manifestAttr = ByteArrayOutputStream().apply {
+            writeAttr(this, -1, 1, 2, 0x03, 2)
+        }.toByteArray()
+        val manifestElem = buildElementChunk(0, manifestAttr, 1, listOf(sdkElem, appElem))
+
+        val totalSize = 8 + stringPoolBytes.size + manifestElem.size
+        val out = ByteBuffer.allocate(totalSize).order(ByteOrder.LITTLE_ENDIAN)
+        out.putShort(0x0003.toShort())
+        out.putShort(8.toShort())
+        out.putInt(totalSize)
+        out.put(stringPoolBytes)
+        out.put(manifestElem)
+
+        return out.array()
+    }
+
     private fun createSampleAxml(): ByteArray {
         val strings = listOf(
             "manifest",               // 0

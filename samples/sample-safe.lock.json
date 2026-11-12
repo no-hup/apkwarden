@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "packageName": "com.example.safe",
+  "minSdk": 26,
+  "targetSdk": 34,
+  "requestedPermissions": [],
+  "declaredPermissions": [],
+  "exportedComponents": [],
+  "deepLinks": [],
+  "nativeLibraries": [],
+  "networkSecurity": null,
+  "sha256Fingerprint": "35ae600c818c4d1d81031dd5379d1bcdc168384e2276ec0833539f639c3f79de"
+}
