@@ -1,9 +1,13 @@
 .gradle/
 build/
+**/build/
 out/
 .idea/
+.kotlin/
 *.iml
 *.ipr
 *.iws
 .DS_Store
 *.log
+*.sarif
+
