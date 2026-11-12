@@ -47,9 +47,13 @@ inputs:
     required: false
     default: 'apkwarden'
   version:
-    description: 'Version of APKwarden to run (or "local" to build from checked out source).'
+    description: 'Version of APKwarden to download if not using local build.'
     required: false
     default: 'v0.1.0'
+  use-local-build:
+    description: 'Force building APKwarden locally via Gradle rather than downloading release binary.'
+    required: false
+    default: 'false'
 
 runs:
   using: 'composite'
@@ -66,6 +70,7 @@ runs:
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_USE_LOCAL_BUILD: ${{ inputs.use-local-build }}
       run: |
         "${{ github.action_path }}/scripts/run-action.sh"
 

@@ -121,8 +121,8 @@ object SarifSerializer {
             tool = SarifTool(
                 driver = SarifDriver(
                     name = "APKWarden",
-                    version = "1.0.0",
-                    informationUri = "https://github.com/apkwarden/apkwarden",
+                    version = "0.1.0",
+                    informationUri = "https://github.com/shaurya/apkwarden",
                     rules = sarifRules
                 )
             ),

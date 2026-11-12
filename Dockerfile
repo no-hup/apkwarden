@@ -17,18 +17,15 @@ LABEL org.opencontainers.image.title="APKwarden" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/shaurya/apkwarden"
 
-# Create non-root user
-RUN addgroup -g 10001 apkwarden && \
-    adduser -D -u 10001 -G apkwarden apkwarden && \
+# Install git and bash for diff --git-ref and script capabilities
+RUN apk add --no-cache git bash ca-certificates && \
     mkdir -p /opt/apkwarden /workspace && \
-    chown -R apkwarden:apkwarden /opt/apkwarden /workspace
+    chmod 777 /workspace
 
 WORKDIR /workspace
 
 # Copy fat JAR from builder
 COPY --from=builder /src/apkwarden-cli/build/libs/*-all.jar /opt/apkwarden/apkwarden.jar
-
-USER apkwarden:apkwarden
 
 ENTRYPOINT ["java", "-jar", "/opt/apkwarden/apkwarden.jar"]
 CMD ["--help"]

@@ -104,4 +104,63 @@ class SurfaceDiffEngineTest {
         assertThat(result.diffItems.any { it.category == "SDK" && it.severity == DiffSeverity.BREAKING }).isTrue()
         assertThat(result.diffItems.any { it.category == "NETWORK" && it.severity == DiffSeverity.BREAKING }).isTrue()
     }
+
+    @Test
+    fun `detects package name mismatch as breaking change`() {
+        val base = createLock(packageName = "com.example.app")
+        val head = createLock(packageName = "com.example.rogue")
+
+        val result = SurfaceDiffEngine.diff(base, head)
+        assertThat(result.hasBreakingChanges).isTrue()
+        assertThat(result.diffItems.any { it.category == "PACKAGE" && it.severity == DiffSeverity.BREAKING }).isTrue()
+    }
+
+    @Test
+    fun `detects removal of network security config as breaking change`() {
+        val base = createLock(
+            networkConfig = LockedNetworkConfig(
+                baseCleartextPermitted = false,
+                cleartextDomains = emptyList(),
+                pinnedDomains = listOf("api.example.com"),
+                trustsUserCerts = false
+            )
+        )
+        val head = createLock(networkConfig = null)
+
+        val result = SurfaceDiffEngine.diff(base, head)
+        assertThat(result.hasBreakingChanges).isTrue()
+        assertThat(result.diffItems.any { it.category == "NETWORK" && it.severity == DiffSeverity.BREAKING && it.message.contains("removed entirely") }).isTrue()
+    }
+
+    @Test
+    fun `detects removed provider read write permission as breaking change`() {
+        val base = createLock(
+            components = listOf(
+                LockedComponent(
+                    type = "PROVIDER",
+                    name = "com.example.DataProvider",
+                    exported = true,
+                    readPermission = "com.example.READ_DATA",
+                    writePermission = "com.example.WRITE_DATA"
+                )
+            )
+        )
+        val head = createLock(
+            components = listOf(
+                LockedComponent(
+                    type = "PROVIDER",
+                    name = "com.example.DataProvider",
+                    exported = true,
+                    readPermission = null,
+                    writePermission = null
+                )
+            )
+        )
+
+        val result = SurfaceDiffEngine.diff(base, head)
+        assertThat(result.hasBreakingChanges).isTrue()
+        assertThat(result.diffItems.count { it.severity == DiffSeverity.BREAKING }).isEqualTo(2)
+        assertThat(result.diffItems.any { it.message.contains("readPermission") }).isTrue()
+        assertThat(result.diffItems.any { it.message.contains("writePermission") }).isTrue()
+    }
 }

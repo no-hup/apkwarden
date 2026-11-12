@@ -53,6 +53,17 @@ object SurfaceDiffEngine {
     fun diff(base: SurfaceLock, head: SurfaceLock): SurfaceDiffResult {
         val diffItems = mutableListOf<DiffItem>()
 
+        // 0. Package Identity Validation
+        if (base.packageName != head.packageName && base.packageName.isNotEmpty()) {
+            diffItems.add(
+                DiffItem(
+                    category = "PACKAGE",
+                    severity = DiffSeverity.BREAKING,
+                    message = "Package name changed from '${base.packageName}' to '${head.packageName}'"
+                )
+            )
+        }
+
         // 1. SDK changes
         if (head.targetSdk < base.targetSdk) {
             diffItems.add(
@@ -113,6 +124,28 @@ object SurfaceDiffEngine {
                             severity = DiffSeverity.BREAKING,
                             message = "Permission guard removed from [${headComp.type}] ${headComp.name}",
                             detail = "Previously required: ${baseComp.permission}"
+                        )
+                    )
+                }
+
+                if (baseComp.readPermission != null && headComp.readPermission == null) {
+                    diffItems.add(
+                        DiffItem(
+                            category = "COMPONENT",
+                            severity = DiffSeverity.BREAKING,
+                            message = "Exported provider '${headComp.name}' removed readPermission guard",
+                            detail = "Previously required readPermission: ${baseComp.readPermission}"
+                        )
+                    )
+                }
+
+                if (baseComp.writePermission != null && headComp.writePermission == null) {
+                    diffItems.add(
+                        DiffItem(
+                            category = "COMPONENT",
+                            severity = DiffSeverity.BREAKING,
+                            message = "Exported provider '${headComp.name}' removed writePermission guard",
+                            detail = "Previously required writePermission: ${baseComp.writePermission}"
                         )
                     )
                 }
@@ -225,6 +258,32 @@ object SurfaceDiffEngine {
                         category = "NETWORK",
                         severity = DiffSeverity.BREAKING,
                         message = "Certificate pinning removed for domain: $domain"
+                    )
+                )
+            }
+        } else if (baseNsc != null && headNsc == null) {
+            diffItems.add(
+                DiffItem(
+                    category = "NETWORK",
+                    severity = DiffSeverity.BREAKING,
+                    message = "Network Security Config was removed entirely from the application",
+                    detail = "Any previous certificate pins or cleartext HTTP restrictions have been dismantled."
+                )
+            )
+        } else if (baseNsc == null && headNsc != null) {
+            diffItems.add(
+                DiffItem(
+                    category = "NETWORK",
+                    severity = DiffSeverity.INFO,
+                    message = "Network Security Config was added to the application"
+                )
+            )
+            if (headNsc.baseCleartextPermitted) {
+                diffItems.add(
+                    DiffItem(
+                        category = "NETWORK",
+                        severity = DiffSeverity.BREAKING,
+                        message = "Base cleartext HTTP traffic is explicitly permitted in newly added Network Security Config"
                     )
                 )
             }

@@ -186,6 +186,25 @@ This document tracks all major architectural decisions, trade-offs, and design r
   5. **Secure Multi-Arch Docker Container (`Dockerfile`):** Multi-stage build on `eclipse-temurin:17-jre-alpine` running as non-root user `apkwarden` (UID 10001) with multi-arch support (`linux/amd64`, `linux/arm64`).
   6. **Automated CI/CD Workflows:** `.github/workflows/ci.yml` (multi-OS build, unit tests, CLI smoke tests, and SARIF verification) and `.github/workflows/release.yml` (GitHub Release publishing with checksums and GHCR container push).
 
+---
+
+## ADR 015: Milestone 4 Post-Consult Hardening — Action Runner Resiliency & Diff Precision
+* **Date:** 2026-11-13
+* **Status:** Accepted
+* **Context:** A staff-level adversarial review of the Milestone 4 packaging and GitHub Action surfaced several critical failure modes across real-world enterprise CI and packaging environments:
+  1. **Action Runner Source Build Trap:** The action wrapper (`scripts/run-action.sh`) previously favored checking out and building from source via `bin/apkwarden` on external runners. This was refactored to always download the pre-built release fat JAR (`apkwarden-${VERSION}-all.jar`) into persistent cache and verify its SHA256 checksum against `SHA256SUMS`, never running Gradle on user runners unless explicitly requested via `use-local-build: true`.
+  2. **Java 17 Pre-flight Check:** Action runner pre-flights `java -version` and immediately provides an actionable `::error::` directing users to `actions/setup-java@v4` if missing or under version 17.
+  3. **First-Adoption Lockfile Flow:** When running `diff --git-ref origin/main:surface.lock.json` on a new project that does not yet have a lockfile in the base branch, `Main.kt` catches the missing file and initializes a clean baseline without failing the PR, enabling smooth first-adoption.
+  4. **Diff Engine Regression Gaps:** Added explicit breaking checks for:
+     - Package name mismatch between base and head.
+     - Removal of Network Security Config (dismantling previously pinned domains and cleartext restrictions).
+     - Removed ContentProvider `readPermission` and `writePermission` guards.
+  5. **Gradle Daemon JVM Unpinning:** Removed generated `gradle/gradle-daemon-jvm.properties` which pinned the daemon to JDK 21 and foojay download URLs, allowing Gradle to run seamlessly on any local JDK 17+ runtime.
+  6. **Precise Baseline Class & Method Matching:** Tightened `BaselineEngine` matching so class suppressions match all methods via `#` boundary while preventing prefix collisions (e.g. `Foo#load` no longer suppresses `Foo#loadUnsafe`).
+  7. **Version & Asset Alignment:** Added standard `--version` CLI option, unified SARIF driver version to `0.1.0`, and aligned Homebrew formula assets with GitHub Release URLs.
+* **Decision:** Implemented all refinements with 51 passing automated tests.
+
+
 
 
 

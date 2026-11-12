@@ -9,6 +9,7 @@ import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
+import com.github.ajalt.clikt.parameters.options.versionOption
 import com.github.ajalt.clikt.parameters.types.file
 import io.apkwarden.core.ApkAnalyzer
 import io.apkwarden.core.baseline.BaselineEngine
@@ -26,6 +27,9 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 class ApkwardenCli : CliktCommand(name = "apkwarden") {
+    init {
+        versionOption("0.1.0")
+    }
     override fun help(context: Context): String = "APKwarden: Fast, reachability-first Android security analyzer."
     override fun run() = Unit
 }
@@ -219,9 +223,19 @@ class DiffCommand : CliktCommand(name = "diff") {
                     val exit = proc.waitFor()
                     if (exit != 0) {
                         val err = proc.errorStream.bufferedReader().readText()
-                        throw com.github.ajalt.clikt.core.UsageError("Failed to read git ref '$gitRef': $err")
+                        if (err.contains("does not exist") || err.contains("fatal: path") || err.contains("unknown revision")) {
+                            if (!jsonOutput) {
+                                echo("ℹ️  First adoption detected: '$gitRef' not found on base branch. Initializing baseline from current attack surface.")
+                            }
+                            null
+                        } else {
+                            throw com.github.ajalt.clikt.core.UsageError("Failed to read git ref '$gitRef': $err")
+                        }
+                    } else {
+                        SurfaceLockGenerator.deserialize(text)
                     }
-                    SurfaceLockGenerator.deserialize(text)
+                } catch (e: com.github.ajalt.clikt.core.UsageError) {
+                    throw e
                 } catch (e: Exception) {
                     throw com.github.ajalt.clikt.core.UsageError("Failed to parse lockfile from git ref '$gitRef': ${e.message}")
                 }
@@ -249,7 +263,21 @@ class DiffCommand : CliktCommand(name = "diff") {
             ApkAnalyzer.analyze(headTarget).surfaceLock
         }
 
-        val diffResult = SurfaceDiffEngine.diff(baseLock, headLock)
+        val effectiveBaseLock = baseLock ?: headLock
+        val diffResult = if (baseLock == null) {
+            SurfaceDiffResult(
+                basePackageName = headLock.packageName,
+                headPackageName = headLock.packageName,
+                hasBreakingChanges = false,
+                totalChanges = 0,
+                breakingCount = 0,
+                warningCount = 0,
+                infoCount = 0,
+                diffItems = emptyList()
+            )
+        } else {
+            SurfaceDiffEngine.diff(baseLock, headLock)
+        }
 
         if (jsonOutput) {
             echo(json.encodeToString(diffResult))
@@ -258,7 +286,7 @@ class DiffCommand : CliktCommand(name = "diff") {
             echo("══════════════════════════════════════════════════════════════════════")
             echo("                   APKWarden Attack Surface Diff                      ")
             echo("══════════════════════════════════════════════════════════════════════")
-            echo("Base:        ${baseLock.packageName} (targetSdk=${baseLock.targetSdk}, SHA: ${baseLock.sha256Fingerprint.take(8)})")
+            echo("Base:        ${effectiveBaseLock.packageName} (targetSdk=${effectiveBaseLock.targetSdk}, SHA: ${effectiveBaseLock.sha256Fingerprint.take(8)})")
             echo("Head:        ${headLock.packageName} (targetSdk=${headLock.targetSdk}, SHA: ${headLock.sha256Fingerprint.take(8)})")
             echo("Changes:     ${diffResult.totalChanges} total (${diffResult.breakingCount} breaking, ${diffResult.warningCount} warnings, ${diffResult.infoCount} info)")
             echo("──────────────────────────────────────────────────────────────────────")
@@ -282,7 +310,7 @@ class DiffCommand : CliktCommand(name = "diff") {
         }
 
         // Write GitHub Action Step Summary if running in GitHub Actions
-        writeGitHubDiffSummary(baseLock, headLock, diffResult)
+        writeGitHubDiffSummary(effectiveBaseLock, headLock, diffResult)
 
         if (failOnBreaking && diffResult.hasBreakingChanges) {
             if (!jsonOutput) {
@@ -377,7 +405,7 @@ class ScanCommand : CliktCommand(name = "scan") {
                 } else if (report.scanWarnings.any { it.contains("PACKER") || it.contains("Failed to parse") }) {
                     echo("⚠️  No static findings detected in available DEX bytecode, but note scan warnings/blind spots above.")
                 } else {
-                    echo("✓ Clean bill of health: Zero vulnerabilities found across all rules!")
+                    echo("✓ No active findings detected across 21 AppSec rules.")
                 }
             } else {
                 var currentSeverity: Severity? = null
@@ -557,7 +585,7 @@ private fun writeGitHubScanSummary(
             sb.appendLine()
         }
     } else if (activeFindings.isEmpty()) {
-        sb.appendLine("> ✅ **Clean Bill of Health:** Zero active security vulnerabilities identified.")
+        sb.appendLine("> ✅ **No active findings detected across 21 AppSec rules.**")
     }
     writeGitHubSummary(sb.toString())
 }

@@ -46,6 +46,16 @@ jobs:
           grep -q "APKWarden" results.sarif
           grep -q "security-severity" results.sarif
 
+      - name: Dogfood Composite GitHub Action
+        uses: ./
+        with:
+          target: samples/sample-vulnerable.apk
+          command: diff
+          lockfile: samples/sample-vulnerable.lock.json
+          fail-on-breaking: 'false'
+          upload-sarif: 'false'
+          use-local-build: 'true'
+
       - name: Upload SARIF to GitHub Code Scanning
         if: matrix.os == 'ubuntu-latest' && always()
         uses: github/codeql-action/upload-sarif@v3

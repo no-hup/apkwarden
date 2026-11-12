@@ -25,7 +25,8 @@ object BaselineEngine {
             val matched = ruleSuppressions.firstOrNull { supp ->
                 supp.target == "*" ||
                         supp.target.equals(findingTarget, ignoreCase = true) ||
-                        findingTarget.startsWith(supp.target, ignoreCase = true)
+                        findingTarget.startsWith("${supp.target}#", ignoreCase = true) ||
+                        (supp.target.endsWith("#*") && findingTarget.startsWith(supp.target.removeSuffix("*"), ignoreCase = true))
             }
 
             if (matched != null) {

@@ -40,6 +40,7 @@ tasks.register<Jar>("fatJar") {
 
 tasks.named("assemble") {
     dependsOn("fatJar")
+    dependsOn("installDist")
 }
 
 tasks.named<JavaExec>("run") {

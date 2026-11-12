@@ -32,9 +32,11 @@ jobs:
           mkdir -p release-assets
           VERSION="${GITHUB_REF_NAME#v}"
           cp apkwarden-cli/build/libs/*-all.jar "release-assets/apkwarden-${GITHUB_REF_NAME}-all.jar"
+          cp apkwarden-cli/build/libs/*-all.jar "release-assets/apkwarden-all.jar"
           cp apkwarden-cli/build/distributions/*.zip "release-assets/apkwarden-${GITHUB_REF_NAME}.zip"
           cp apkwarden-cli/build/distributions/*.tar "release-assets/apkwarden-${GITHUB_REF_NAME}.tar"
           gzip -c "release-assets/apkwarden-${GITHUB_REF_NAME}.tar" > "release-assets/apkwarden-${GITHUB_REF_NAME}.tar.gz"
+          cp "release-assets/apkwarden-${GITHUB_REF_NAME}.tar.gz" "release-assets/apkwarden-${VERSION}.tar.gz"
           rm -f "release-assets/apkwarden-${GITHUB_REF_NAME}.tar"
 
           # Calculate SHA256 checksums
