@@ -138,5 +138,18 @@ This document tracks all major architectural decisions, trade-offs, and design r
   5. **Split APK Multi-DEX Namespace Isolation:** Feature split APKs in split sets often contain conflicting `classes.dex` entries. `SplitApkCluster` now automatically namespaces split DEX entries (`split_${index}_classes.dex`) to ensure complete, collision-free multi-DEX indexing across base and feature splits.
 * **Decision:** Implemented these five architectural enhancements into `DexIndex`, `SplitApkCluster`, `ProtoXmlDecoder`, and the rules suite with comprehensive test coverage.
 
+---
+
+## ADR 012: Milestone 3 — Attack Surface Diffing, SARIF 2.1.0, Baseline Suppression, and Disassembly Snippets
+* **Date:** 2026-11-13
+* **Status:** Accepted
+* **Context:** Developers and security teams integrating APKwarden into CI/CD pipelines need automated guardrails against regressions, seamless reporting into GitHub Code Scanning, grandfathered finding suppression, and immediate code context for flagged vulnerabilities.
+* **Decision:**
+  1. **Lockfile Diff Engine (`apkwarden diff`):** Compares committed `surface.lock.json` against new APK builds or PR lockfiles. Automatically flags breaking attack surface drift: added exported unguarded components, permission guards removed, dangerous runtime permissions added (`CAMERA`, `RECORD_AUDIO`, etc.), cleartext HTTP traffic enabled, user CA certificate trust enabled, domain pinning removed, and targetSdk downgrades. Exits with code 2 on breaking changes to gate PR merges.
+  2. **SARIF 2.1.0 Output (`--sarif <file>`):** Serializes scan results into the standard OASIS Static Analysis Results Interchange Format (SARIF 2.1.0) compatible with GitHub Code Scanning (`upload-sarif`), GitLab SAST, Azure DevOps, and IDE SARIF viewers. Maps Dalvik findings to Smali virtual file URIs, line regions, rule definitions, remediation markdown, and CWE/OWASP tags.
+  3. **Baseline Suppression (`--baseline <file>` / `--generate-baseline <file>`):** Enables engineering teams to record existing legacy vulnerabilities into `.apkwarden-baseline.json`. Findings matching the baseline are marked `(SUPPRESSED)` and bypassed during `--fail-on` threshold evaluation, allowing teams to enforce strict zero-vulnerability gating on new code without failing builds on grandfathered tech debt.
+  4. **Contextual Dalvik Disassembly Snippets:** Instead of requiring full-app decompilation or leaving developers guessing, `MethodAnalyzer` generates 5-line Dalvik bytecode snippets surrounding flagged call sites with an arrow pointer (`>`) at the sink instruction. Displayed directly in CLI output and embedded in SARIF report snippets.
+
+
 
 

@@ -11,8 +11,13 @@ import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
 import io.apkwarden.core.ApkAnalyzer
+import io.apkwarden.core.baseline.BaselineEngine
+import io.apkwarden.core.diff.DiffSeverity
+import io.apkwarden.core.diff.SurfaceDiffEngine
 import io.apkwarden.core.lock.SurfaceLockGenerator
+import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
+import io.apkwarden.core.sarif.SarifSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -188,12 +193,91 @@ class IngestCheckCommand : CliktCommand(name = "ingest-check") {
     }
 }
 
+class DiffCommand : CliktCommand(name = "diff") {
+    override fun help(context: Context): String = "Compare attack surface between a baseline surface.lock.json and a new APK/AAB build."
+
+    private val headTarget by argument("head", help = "Path to new APK, AAB, or surface.lock.json").file(mustExist = true)
+    private val baseTarget by option("-b", "--baseline", help = "Path to baseline surface.lock.json (default: surface.lock.json in current directory)").file(mustExist = true)
+    private val jsonOutput by option("--json", help = "Output diff as JSON").flag(default = false)
+    private val failOnBreaking by option(
+        "--fail-on-breaking",
+        help = "Exit with code 2 if breaking attack surface additions are detected"
+    ).flag("--no-fail-on-breaking", default = true)
+
+    private val json = Json { prettyPrint = true }
+
+    override fun run() {
+        val baseLockFile = baseTarget ?: File("surface.lock.json")
+        if (!baseLockFile.exists()) {
+            throw com.github.ajalt.clikt.core.UsageError("Baseline lockfile '${baseLockFile.path}' not found. Run 'apkwarden lock' to generate one, or specify with -b/--baseline.")
+        }
+
+        val baseLock = try {
+            SurfaceLockGenerator.deserialize(baseLockFile.readText())
+        } catch (e: Exception) {
+            throw com.github.ajalt.clikt.core.UsageError("Failed to parse baseline lockfile '${baseLockFile.path}': ${e.message}")
+        }
+
+        val headLock = if (headTarget.name.endsWith(".json")) {
+            try {
+                SurfaceLockGenerator.deserialize(headTarget.readText())
+            } catch (e: Exception) {
+                throw com.github.ajalt.clikt.core.UsageError("Failed to parse head lockfile '${headTarget.path}': ${e.message}")
+            }
+        } else {
+            ApkAnalyzer.analyze(headTarget).surfaceLock
+        }
+
+        val diffResult = SurfaceDiffEngine.diff(baseLock, headLock)
+
+        if (jsonOutput) {
+            echo(json.encodeToString(diffResult))
+        } else {
+            echo("")
+            echo("══════════════════════════════════════════════════════════════════════")
+            echo("                   APKWarden Attack Surface Diff                      ")
+            echo("══════════════════════════════════════════════════════════════════════")
+            echo("Base:        ${baseLock.packageName} (targetSdk=${baseLock.targetSdk}, SHA: ${baseLock.sha256Fingerprint.take(8)})")
+            echo("Head:        ${headLock.packageName} (targetSdk=${headLock.targetSdk}, SHA: ${headLock.sha256Fingerprint.take(8)})")
+            echo("Changes:     ${diffResult.totalChanges} total (${diffResult.breakingCount} breaking, ${diffResult.warningCount} warnings, ${diffResult.infoCount} info)")
+            echo("──────────────────────────────────────────────────────────────────────")
+
+            if (diffResult.totalChanges == 0) {
+                echo("✓ Attack surface matches baseline perfectly. Zero drift detected.")
+            } else {
+                for (item in diffResult.diffItems) {
+                    val badge = when (item.severity) {
+                        DiffSeverity.BREAKING -> "🚨 [BREAKING]"
+                        DiffSeverity.WARNING -> "⚠️  [WARNING]"
+                        DiffSeverity.INFO -> "ℹ️  [INFO]"
+                    }
+                    echo("$badge [${item.category}] ${item.message}")
+                    if (item.detail != null) {
+                        echo("    ${item.detail}")
+                    }
+                }
+            }
+            echo("══════════════════════════════════════════════════════════════════════")
+        }
+
+        if (failOnBreaking && diffResult.hasBreakingChanges) {
+            if (!jsonOutput) {
+                echo("❌ ATTACK SURFACE CHECK FAILED: Found ${diffResult.breakingCount} breaking attack surface change(s).")
+            }
+            throw ProgramResult(2)
+        }
+    }
+}
+
 class ScanCommand : CliktCommand(name = "scan") {
-    override fun help(context: Context): String = "Perform full bytecode and attack surface security scan with 20 high-precision AppSec rules."
+    override fun help(context: Context): String = "Perform full bytecode and attack surface security scan with 21 high-precision AppSec rules."
 
     private val target by argument("apk-file", help = "Path to APK, AAB, or split bundle").file(mustExist = true)
     private val jsonOutput by option("--json", help = "Output report as JSON").flag(default = false)
-    private val failOn by option("--fail-on", help = "Exit with code 2 if findings at or above severity exist (CRITICAL, HIGH, MEDIUM, LOW, NEVER)").default("CRITICAL")
+    private val sarifOutput by option("--sarif", help = "Export report in SARIF 2.1.0 format for GitHub Code Scanning").file()
+    private val baselineFile by option("--baseline", help = "Path to .apkwarden-baseline.json to suppress grandfathered findings").file(mustExist = true)
+    private val generateBaseline by option("--generate-baseline", help = "Generate a baseline JSON file containing all findings from this scan").file()
+    private val failOn by option("--fail-on", help = "Exit with code 2 if active findings at or above severity exist (CRITICAL, HIGH, MEDIUM, LOW, NEVER)").default("CRITICAL")
 
     private val json = Json { prettyPrint = true }
 
@@ -202,7 +286,37 @@ class ScanCommand : CliktCommand(name = "scan") {
             echo("Scanning ${target.name} for Android security vulnerabilities...")
         }
 
-        val report = ApkAnalyzer.scan(target)
+        val rawReport = ApkAnalyzer.scan(target)
+
+        // Apply baseline if provided
+        val finalFindings = if (baselineFile != null) {
+            val baseline = try {
+                BaselineEngine.deserialize(baselineFile!!.readText())
+            } catch (e: Exception) {
+                throw com.github.ajalt.clikt.core.UsageError("Failed to parse baseline file '${baselineFile!!.path}': ${e.message}")
+            }
+            BaselineEngine.applyBaseline(rawReport.findings, baseline)
+        } else {
+            rawReport.findings
+        }
+
+        val report = rawReport.copy(findings = finalFindings)
+
+        if (generateBaseline != null) {
+            val generated = BaselineEngine.generateBaseline(report.findings)
+            generateBaseline!!.writeText(BaselineEngine.serialize(generated))
+            if (!jsonOutput) {
+                echo("✓ Generated baseline file: ${generateBaseline!!.absolutePath} (${generated.suppressions.size} suppressions)")
+            }
+        }
+
+        if (sarifOutput != null) {
+            val sarifJson = SarifSerializer.serialize(report)
+            sarifOutput!!.writeText(sarifJson)
+            if (!jsonOutput) {
+                echo("✓ Exported SARIF 2.1.0 report: ${sarifOutput!!.absolutePath}")
+            }
+        }
 
         if (jsonOutput) {
             echo(json.encodeToString(report))
@@ -210,6 +324,8 @@ class ScanCommand : CliktCommand(name = "scan") {
             val summary = report.summary
             val surface = report.attackSurface
             val fp = report.stackFingerprint
+            val activeFindings = report.findings.filter { !it.isSuppressed }
+            val suppressedCount = report.findings.count { it.isSuppressed }
 
             echo("")
             echo("══════════════════════════════════════════════════════════════════════")
@@ -220,7 +336,8 @@ class ScanCommand : CliktCommand(name = "scan") {
             echo("SDK Target:      minSdk=${surface.minSdk}, targetSdk=${surface.targetSdk}")
             echo("Primary Stack:   ${fp.primaryStack}")
             echo("Security Score:  ${summary.securityScore}/100")
-            echo("Findings:        CRITICAL: ${summary.criticalCount} | HIGH: ${summary.highCount} | MEDIUM: ${summary.mediumCount} | LOW: ${summary.lowCount} | INFO: ${summary.infoCount}")
+            val suppStr = if (suppressedCount > 0) " | SUPPRESSED: $suppressedCount" else ""
+            echo("Findings:        CRITICAL: ${summary.criticalCount} | HIGH: ${summary.highCount} | MEDIUM: ${summary.mediumCount} | LOW: ${summary.lowCount} | INFO: ${summary.infoCount}$suppStr")
             echo("──────────────────────────────────────────────────────────────────────")
 
             if (report.scanWarnings.isNotEmpty()) {
@@ -229,9 +346,11 @@ class ScanCommand : CliktCommand(name = "scan") {
                 report.scanWarnings.forEach { echo("• $it") }
             }
 
-            if (report.findings.isEmpty()) {
+            if (activeFindings.isEmpty()) {
                 echo("")
-                if (report.scanWarnings.any { it.contains("PACKER") || it.contains("Failed to parse") }) {
+                if (suppressedCount > 0) {
+                    echo("✓ Zero active vulnerabilities ($suppressedCount grandfathered findings suppressed by baseline).")
+                } else if (report.scanWarnings.any { it.contains("PACKER") || it.contains("Failed to parse") }) {
                     echo("⚠️  No static findings detected in available DEX bytecode, but note scan warnings/blind spots above.")
                 } else {
                     echo("✓ Clean bill of health: Zero vulnerabilities found across all rules!")
@@ -239,6 +358,8 @@ class ScanCommand : CliktCommand(name = "scan") {
             } else {
                 var currentSeverity: Severity? = null
                 for (finding in report.findings) {
+                    if (finding.isSuppressed) continue
+
                     if (finding.severity != currentSeverity) {
                         currentSeverity = finding.severity
                         val badge = when (currentSeverity) {
@@ -252,7 +373,14 @@ class ScanCommand : CliktCommand(name = "scan") {
                         echo("=== $badge FINDINGS ===")
                     }
 
-                    echo("• [${finding.id}] ${finding.title} (${finding.cwe} / ${finding.owasp})")
+                    val reachabilityBadge = when (finding.reachability) {
+                        Reachability.DIRECT -> "[DIRECT]"
+                        Reachability.REACHABLE -> "[REACHABLE]"
+                        Reachability.UNKNOWN -> "[UNKNOWN/INDIRECT]"
+                        Reachability.UNREACHABLE -> "[UNREACHABLE]"
+                    }
+
+                    echo("• [${finding.id}] ${finding.title} ($reachabilityBadge ${finding.cwe} / ${finding.owasp})")
                     echo("  Confidence:   ${finding.confidence}")
                     if (finding.component != null) {
                         echo("  Component:    ${finding.component}")
@@ -263,9 +391,20 @@ class ScanCommand : CliktCommand(name = "scan") {
                     if (finding.evidence != null) {
                         echo("  Evidence:     ${finding.evidence}")
                     }
+                    val snippet = finding.codeSnippet
+                    if (snippet != null) {
+                        echo("  Bytecode Snippet:")
+                        snippet.lines().forEach { line ->
+                            echo("    $line")
+                        }
+                    }
                     echo("  Description:  ${finding.description}")
                     echo("  Remediation:  ${finding.remediation}")
                     echo("")
+                }
+
+                if (suppressedCount > 0) {
+                    echo("ℹ️  Note: $suppressedCount grandfathered finding(s) suppressed via baseline.")
                 }
             }
             echo("══════════════════════════════════════════════════════════════════════")
@@ -283,10 +422,10 @@ class ScanCommand : CliktCommand(name = "scan") {
 
         if (failSeverity != null) {
             val thresholdOrdinal = failSeverity.ordinal
-            val violations = report.findings.filter { it.severity.ordinal <= thresholdOrdinal }
+            val violations = report.findings.filter { !it.isSuppressed && it.severity.ordinal <= thresholdOrdinal }
             if (violations.isNotEmpty()) {
                 if (!jsonOutput) {
-                    echo("❌ CI GATE FAILED: Found ${violations.size} finding(s) at or above $failSeverity threshold.")
+                    echo("❌ CI GATE FAILED: Found ${violations.size} active finding(s) at or above $failSeverity threshold.")
                 }
                 throw ProgramResult(2)
             }
@@ -297,6 +436,7 @@ class ScanCommand : CliktCommand(name = "scan") {
 fun main(args: Array<String>) = ApkwardenCli()
     .subcommands(
         ScanCommand(),
+        DiffCommand(),
         SurfaceCommand(),
         LockCommand(),
         FingerprintCommand(),

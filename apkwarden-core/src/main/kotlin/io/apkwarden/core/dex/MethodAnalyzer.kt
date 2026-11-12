@@ -213,4 +213,32 @@ class MethodAnalyzer(private val method: Method) {
                 containsCallTo("java.io.File", "getCanonicalFile") ||
                 containsCallTo("java.io.File", "getName")
     }
+
+    /**
+     * Extracts a contextual Dalvik disassembly snippet centered around target instruction index.
+     */
+    fun getDisassemblySnippet(targetIndex: Int, window: Int = 2): String {
+        if (instructions.isEmpty()) return ""
+        val start = (targetIndex - window).coerceAtLeast(0)
+        val end = (targetIndex + window).coerceAtMost(instructions.size - 1)
+        val sb = StringBuilder()
+        for (i in start..end) {
+            val prefix = if (i == targetIndex) "> " else "  "
+            val inst = instructions[i]
+            val offset = "%04x".format(i)
+            val op = inst.opcode.name
+            val refStr = if (inst is ReferenceInstruction) {
+                when (val ref = inst.reference) {
+                    is MethodReference -> " ${ref.definingClass}->${ref.name}"
+                    is StringReference -> " \"${ref.string}\""
+                    is com.android.tools.smali.dexlib2.iface.reference.FieldReference -> " ${ref.definingClass}->${ref.name}:${ref.type}"
+                    is com.android.tools.smali.dexlib2.iface.reference.TypeReference -> " ${ref.type}"
+                    else -> ""
+                }
+            } else ""
+            sb.append("$prefix$offset: $op$refStr")
+            if (i < end) sb.append("\n")
+        }
+        return sb.toString()
+    }
 }

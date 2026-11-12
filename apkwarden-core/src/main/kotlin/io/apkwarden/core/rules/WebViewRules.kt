@@ -82,7 +82,8 @@ class WebViewArbitraryUrlRule : Rule {
                         targetMethod = cs.callerMethod,
                         evidence = "WebView.loadUrl invoked with tainted intent URL argument ($regVal)",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
-                        reachability = reachability
+                        reachability = reachability,
+                        codeSnippet = analyzer.getDisassemblySnippet(cs.instructionIndex)
                     )
                 )
             }

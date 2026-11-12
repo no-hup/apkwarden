@@ -5,6 +5,7 @@ plugins {
 }
 
 application {
+    applicationName = "apkwarden"
     mainClass.set("io.apkwarden.cli.MainKt")
 }
 

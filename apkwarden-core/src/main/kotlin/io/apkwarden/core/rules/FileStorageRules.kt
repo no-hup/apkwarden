@@ -74,7 +74,8 @@ class DirtyStreamTraversalRule : Rule {
                         targetMethod = cs.callerMethod,
                         evidence = "Method calls openInputStream and Uri.getLastPathSegment() without File.getCanonicalPath()",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
-                        reachability = reachability
+                        reachability = reachability,
+                        codeSnippet = analyzer.getDisassemblySnippet(cs.instructionIndex)
                     )
                 )
             }

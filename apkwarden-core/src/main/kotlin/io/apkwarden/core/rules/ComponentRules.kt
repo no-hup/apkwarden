@@ -87,7 +87,8 @@ class IntentRedirectionRule : Rule {
                         targetMethod = cs.callerMethod,
                         evidence = "Call to ${cs.targetClass}#${cs.targetMethod} with tainted register v$intentReg ($regVal)",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
-                        reachability = reachability
+                        reachability = reachability,
+                        codeSnippet = analyzer.getDisassemblySnippet(cs.instructionIndex)
                     )
                 )
             }

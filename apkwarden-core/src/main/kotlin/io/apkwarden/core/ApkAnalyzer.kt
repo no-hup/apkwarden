@@ -25,13 +25,11 @@ data class AnalysisResult(
 object ApkAnalyzer {
 
     fun analyze(file: File): AnalysisResult {
-        val archive = ApkIngestManager.open(file)
-        return analyzeArchive(archive)
+        return ApkIngestManager.open(file).use { analyzeArchive(it) }
     }
 
-    fun analyzeArchive(archive: ApkArchive): AnalysisResult {
-        archive.use { arch ->
-            val warnings = mutableListOf<String>()
+    fun analyzeArchive(arch: ApkArchive): AnalysisResult {
+        val warnings = mutableListOf<String>()
 
             // Check ZIP anomalies
             for (anomaly in arch.getAnomalies()) {
@@ -70,16 +68,15 @@ object ApkAnalyzer {
             // Lock generation
             val surfaceLock = SurfaceLockGenerator.generate(attackSurface, fingerprint)
 
-            return AnalysisResult(
-                archiveName = arch.archiveName,
-                isSplitSet = arch.isSplitSet,
-                isAab = arch.isAab,
-                attackSurface = attackSurface,
-                fingerprint = fingerprint,
-                surfaceLock = surfaceLock,
-                warnings = warnings
-            )
-        }
+        return AnalysisResult(
+            archiveName = arch.archiveName,
+            isSplitSet = arch.isSplitSet,
+            isAab = arch.isAab,
+            attackSurface = attackSurface,
+            fingerprint = fingerprint,
+            surfaceLock = surfaceLock,
+            warnings = warnings
+        )
     }
 
     fun scan(file: File, rules: List<io.apkwarden.core.rules.Rule> = io.apkwarden.core.rules.RuleRegistry.allRules): io.apkwarden.core.model.ScanReport {

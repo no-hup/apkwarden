@@ -88,6 +88,10 @@ object SurfaceLockGenerator {
         return json.encodeToString(lock)
     }
 
+    fun deserialize(jsonStr: String): SurfaceLock {
+        return json.decodeFromString(jsonStr)
+    }
+
     private fun formatDeepLink(link: DeepLink): String {
         val hostPart = if (link.host != null) "://${link.host}" else "://"
         val pathPart = link.path ?: ""

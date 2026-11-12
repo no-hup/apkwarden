@@ -41,7 +41,9 @@ data class Finding(
     val targetMethod: String? = null,
     val evidence: String? = null,
     val lineOrOffset: String? = null,
-    val reachability: Reachability = Reachability.DIRECT
+    val reachability: Reachability = Reachability.DIRECT,
+    val codeSnippet: String? = null,
+    val isSuppressed: Boolean = false
 )
 
 @Serializable
