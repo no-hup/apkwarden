@@ -81,3 +81,22 @@ This document tracks all major architectural decisions, trade-offs, and design r
   5. **Network Security Config Platform Defaults:** Cleartext defaults depend on `targetSdk` (allowed by default on `targetSdk <= 27`, blocked on `targetSdk >= 28`); user CA cert trust defaults to true on `targetSdk <= 23`, false on `targetSdk >= 24`.
   6. **Sanitization:** Attacker-controlled package, component, and deep link strings must strip control characters and ANSI escapes to prevent terminal injection.
 * **Decision:** Implemented these six refinements into the Milestone 1 core engine before proceeding to Milestone 2.
+
+---
+
+## ADR 008: Pure-JVM Multi-DEX Bytecode Indexing with `dexlib2`
+* **Date:** 2026-11-12
+* **Status:** Accepted
+* **Context:** Android applications span multiple DEX files (`classes.dex`, `classes2.dex`, etc.). Traditional decompilers (e.g. jadx, CFR) produce Java source code which is slow, CPU-intensive, and fails on obfuscated or malformed control flow.
+* **Decision:** Use Google's pure-JVM `dexlib2` library to parse Dalvik bytecode directly into memory without decompilation. Build an inverted call-site index (callee -> callers), class inheritance tree, and constant pools across all DEX files in a single pass.
+* **Why:** In-memory bytecode indexing runs in seconds (5-10x faster than source decompilation), requires zero external binary tools, is immune to decompilation crashes, and preserves exact Dalvik instruction semantics.
+
+---
+
+## ADR 009: Context-Aware Reachability & Attack Surface Gating
+* **Date:** 2026-11-12
+* **Status:** Accepted
+* **Context:** Traditional static scanners (e.g. MobSF) trigger hundreds of false positives by flagging dangerous calls (e.g. `startActivity(intent)`, `loadUrl(url)`) in private, internal helper classes that external applications cannot invoke.
+* **Decision:** Cross-reference all bytecode sink detections with Milestone 1's resolved `AttackSurface`. A call to `startActivity` with an untrusted Intent is only flagged as `INTENT_REDIRECTION` (CRITICAL) if the call site is located within an exported component or reachable from an exported entry point (1–2 hop intra/inter-procedural call graph). Sinks in unexported internal components are either downgraded to `LOW`/`INFO` or suppressed entirely.
+* **Why:** Eliminates the #1 reason developers turn off or ignore security scanners: noisy, unexploitable findings in unreachable code.
+

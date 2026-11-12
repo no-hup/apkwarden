@@ -81,4 +81,11 @@ object ApkAnalyzer {
             )
         }
     }
+
+    fun scan(file: File, rules: List<io.apkwarden.core.rules.Rule> = io.apkwarden.core.rules.RuleRegistry.allRules): io.apkwarden.core.model.ScanReport {
+        val archive = ApkIngestManager.open(file)
+        return archive.use {
+            io.apkwarden.core.scan.ScanEngine(rules).scan(it)
+        }
+    }
 }

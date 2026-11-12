@@ -9,4 +9,5 @@ dependencies {
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
     testImplementation("org.assertj:assertj-core:3.26.3")
+    testImplementation("com.android.tools.smali:smali:3.0.4")
 }

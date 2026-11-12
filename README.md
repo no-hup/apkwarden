@@ -25,22 +25,31 @@ Existing open-source APK scanners decompile 100 MB production apps into 100,000+
 
 ## Quick Start
 
-### 1. Inspect Attack Surface
+### 1. Full Security Scan (CLI & CI Gating)
+```bash
+./gradlew :apkwarden-cli:run --args="scan app.apk"
+# Or JSON output for CI pipelines
+./gradlew :apkwarden-cli:run --args="scan app.apk --json"
+# Or fail CI build if HIGH or CRITICAL issues exist
+./gradlew :apkwarden-cli:run --args="scan app.apk --fail-on=HIGH"
+```
+
+### 2. Inspect Attack Surface
 ```bash
 ./gradlew :apkwarden-cli:run --args="surface app.apk"
 ```
 
-### 2. Inspect Stack, Compiler, & Blind Spots
+### 3. Inspect Stack, Compiler, & Blind Spots
 ```bash
 ./gradlew :apkwarden-cli:run --args="fingerprint app.apk"
 ```
 
-### 3. Generate `surface.lock.json` for Git CI Gating
+### 4. Generate `surface.lock.json` for Git CI Gating
 ```bash
 ./gradlew :apkwarden-cli:run --args="lock app.apk -o surface.lock.json"
 ```
 
-### 4. Verify Archive Integrity
+### 5. Verify Archive Integrity
 ```bash
 ./gradlew :apkwarden-cli:run --args="ingest-check app.apk"
 ```
@@ -58,9 +67,35 @@ APKwarden is built in 4 milestones:
   - Stack fingerprinter & R8 marker extraction (`pg-map-id`).
   - Resolved attack surface & `surface.lock.json` generator.
   - Comprehensive unit & integration test suite.
-- [ ] **Milestone 2 — Play Pre-Flight, SBOM, & PoC Generation**
-- [ ] **Milestone 3 — Bytecode Call-Site Index & YAML Rule Engine**
-- [ ] **Milestone 4 — CI Gating, Diff Engine, & Release Packaging**
+- [x] **Milestone 2 — Bytecode Call-Site Index & Rules Engine:**
+  - Pure-JVM multi-DEX indexing across `classes*.dex` with `dexlib2`.
+  - Class inheritance resolution with built-in Android SDK hierarchy mapping.
+  - Reachability gating: cross-references bytecode sinks with exported attack surface to eliminate internal false positives.
+  - Lightweight intra-procedural register state & taint tracking (`MethodAnalyzer`).
+  - 20 high-precision core AppSec rules:
+    - `APK-SEC-001`: Intent Redirection in Exported Components (CRITICAL)
+    - `APK-SEC-002`: Mutable PendingIntent on Android 12+ (HIGH)
+    - `APK-SEC-003`: Implicit PendingIntent Hijacking (MEDIUM)
+    - `APK-SEC-004`: Dynamic Receiver Missing Export Flag on Android 14+ (HIGH)
+    - `APK-SEC-005`: Dirty Stream File Overwrite Traversal (CRITICAL)
+    - `APK-SEC-006`: Zip Slip Archive Extraction Traversal (HIGH)
+    - `APK-SEC-007`: Untrusted URL Loaded in WebView from Exported Component (HIGH)
+    - `APK-SEC-008`: Insecure WebView File & Universal Access (HIGH/CRITICAL)
+    - `APK-SEC-009`: WebView JavaScript Interface Exposure & RCE (MEDIUM/CRITICAL)
+    - `APK-SEC-010`: Fragile Deep Link Host Validation via contains/endsWith (MEDIUM)
+    - `APK-SEC-011`: Insecure ECB Cipher / DES / Static Keys (HIGH)
+    - `APK-SEC-012`: Predictable java.util.Random in Security Contexts (MEDIUM)
+    - `APK-SEC-013`: Insecure Custom X509TrustManager SSL Bypass (CRITICAL)
+    - `APK-SEC-014`: AllowAll HostnameVerifier MitM Vulnerability (CRITICAL)
+    - `APK-SEC-015`: Dynamic SQL Concatenation in rawQuery/execSQL (HIGH)
+    - `APK-SEC-016`: World-Readable / World-Writable File Modes (HIGH)
+    - `APK-SEC-017`: Hardcoded Cloud Keys & High-Entropy Credentials (HIGH)
+    - `APK-SEC-018`: Insecure Cleartext HTTP Traffic in Bytecode (MEDIUM)
+    - `APK-SEC-019`: High-Risk Sensitive Android Permissions (MEDIUM)
+    - `APK-SEC-020`: Plaintext Tokens in Unencrypted SharedPreferences (LOW)
+  - Synthetic Smali DEX fixtures for positive & negative rule verification (31 tests passing).
+- [ ] **Milestone 3 — CI Gating, Lockfile Diffs, & Decompilation Snippets**
+- [ ] **Milestone 4 — Native Packaging, Homebrew Formula, & Release**
 
 See [DECISIONS.md](DECISIONS.md) for architectural decision records and engineering trade-offs.
 

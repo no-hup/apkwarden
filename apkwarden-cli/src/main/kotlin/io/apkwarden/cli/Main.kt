@@ -2,14 +2,19 @@ package io.apkwarden.cli
 
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.Context
+import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.options.default
+import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
 import io.apkwarden.core.ApkAnalyzer
 import io.apkwarden.core.lock.SurfaceLockGenerator
+import io.apkwarden.core.model.Severity
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 
 class ApkwardenCli : CliktCommand(name = "apkwarden") {
@@ -183,8 +188,104 @@ class IngestCheckCommand : CliktCommand(name = "ingest-check") {
     }
 }
 
+class ScanCommand : CliktCommand(name = "scan") {
+    override fun help(context: Context): String = "Perform full bytecode and attack surface security scan with 20 high-precision AppSec rules."
+
+    private val target by argument("apk-file", help = "Path to APK, AAB, or split bundle").file(mustExist = true)
+    private val jsonOutput by option("--json", help = "Output report as JSON").flag(default = false)
+    private val failOn by option("--fail-on", help = "Exit with code 2 if findings at or above severity exist (CRITICAL, HIGH, MEDIUM, LOW, NEVER)").default("CRITICAL")
+
+    private val json = Json { prettyPrint = true }
+
+    override fun run() {
+        if (!jsonOutput) {
+            echo("Scanning ${target.name} for Android security vulnerabilities...")
+        }
+
+        val report = ApkAnalyzer.scan(target)
+
+        if (jsonOutput) {
+            echo(json.encodeToString(report))
+        } else {
+            val summary = report.summary
+            val surface = report.attackSurface
+            val fp = report.stackFingerprint
+
+            echo("")
+            echo("══════════════════════════════════════════════════════════════════════")
+            echo("                      APKWarden Security Report                       ")
+            echo("══════════════════════════════════════════════════════════════════════")
+            echo("Target:          ${report.apkName}")
+            echo("Package:         ${surface.packageName}")
+            echo("SDK Target:      minSdk=${surface.minSdk}, targetSdk=${surface.targetSdk}")
+            echo("Primary Stack:   ${fp.primaryStack}")
+            echo("Security Score:  ${summary.securityScore}/100")
+            echo("Findings:        CRITICAL: ${summary.criticalCount} | HIGH: ${summary.highCount} | MEDIUM: ${summary.mediumCount} | LOW: ${summary.lowCount} | INFO: ${summary.infoCount}")
+            echo("──────────────────────────────────────────────────────────────────────")
+
+            if (report.findings.isEmpty()) {
+                echo("")
+                echo("✓ Clean bill of health: Zero vulnerabilities found across all 20 rules!")
+            } else {
+                var currentSeverity: Severity? = null
+                for (finding in report.findings) {
+                    if (finding.severity != currentSeverity) {
+                        currentSeverity = finding.severity
+                        val badge = when (currentSeverity) {
+                            Severity.CRITICAL -> "🔴 [CRITICAL]"
+                            Severity.HIGH -> "🟠 [HIGH]"
+                            Severity.MEDIUM -> "🟡 [MEDIUM]"
+                            Severity.LOW -> "🔵 [LOW]"
+                            Severity.INFO -> "⚪ [INFO]"
+                        }
+                        echo("")
+                        echo("=== $badge FINDINGS ===")
+                    }
+
+                    echo("• [${finding.id}] ${finding.title} (${finding.cwe} / ${finding.owasp})")
+                    echo("  Confidence:   ${finding.confidence}")
+                    if (finding.component != null) {
+                        echo("  Component:    ${finding.component}")
+                    }
+                    if (finding.targetMethod != null) {
+                        echo("  Method:       ${finding.targetClass}#${finding.targetMethod}")
+                    }
+                    if (finding.evidence != null) {
+                        echo("  Evidence:     ${finding.evidence}")
+                    }
+                    echo("  Description:  ${finding.description}")
+                    echo("  Remediation:  ${finding.remediation}")
+                    echo("")
+                }
+            }
+            echo("══════════════════════════════════════════════════════════════════════")
+        }
+
+        // CI Gating evaluation
+        val failSeverity = when (failOn.uppercase()) {
+            "CRITICAL" -> Severity.CRITICAL
+            "HIGH" -> Severity.HIGH
+            "MEDIUM" -> Severity.MEDIUM
+            "LOW" -> Severity.LOW
+            else -> null
+        }
+
+        if (failSeverity != null) {
+            val thresholdOrdinal = failSeverity.ordinal
+            val violations = report.findings.filter { it.severity.ordinal <= thresholdOrdinal }
+            if (violations.isNotEmpty()) {
+                if (!jsonOutput) {
+                    echo("❌ CI GATE FAILED: Found ${violations.size} finding(s) at or above $failSeverity threshold.")
+                }
+                throw ProgramResult(2)
+            }
+        }
+    }
+}
+
 fun main(args: Array<String>) = ApkwardenCli()
     .subcommands(
+        ScanCommand(),
         SurfaceCommand(),
         LockCommand(),
         FingerprintCommand(),

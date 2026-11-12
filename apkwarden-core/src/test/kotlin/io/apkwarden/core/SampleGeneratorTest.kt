@@ -17,10 +17,47 @@ class SampleGeneratorTest {
         val samplesDir = File(rootDir, "samples").apply { mkdirs() }
         val sampleApk = File(samplesDir, "sample-vulnerable.apk")
 
-        if (sampleApk.exists()) return
+        sampleApk.delete()
 
         val axml = createSampleAxml()
-        val dex = "dummy dex content ~~R8{backend:dex,compilation-mode:release,min-api:24,pg-map-id:map-hash-sample,version:8.4.10}".toByteArray()
+        val smali = """
+            .class public Lcom/example/vulnerable/DeepLinkActivity;
+            .super Landroid/app/Activity;
+            .source "DeepLinkActivity.java"
+
+            .method public constructor <init>()V
+                .registers 1
+                invoke-direct {p0}, Landroid/app/Activity;-><init>()V
+                return-void
+            .end method
+
+            .method public onCreate(Landroid/os/Bundle;)V
+                .registers 5
+                invoke-virtual {p0}, Landroid/app/Activity;->getIntent()Landroid/content/Intent;
+                move-result-object v0
+                invoke-virtual {v0}, Landroid/content/Intent;->getData()Landroid/net/Uri;
+                move-result-object v1
+                if-eqz v1, :cond_skip
+                invoke-virtual {v1}, Landroid/net/Uri;->getHost()Ljava/lang/String;
+                move-result-object v2
+                const-string v3, "pay.example.com"
+                invoke-virtual {v2, v3}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+                :cond_skip
+                
+                const-string v0, "AES/ECB/PKCS5Padding"
+                invoke-static {v0}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
+                
+                const/4 v1, 0x0
+                const/high16 v2, 0x2000000
+                invoke-static {p0, v1, v0, v2}, Landroid/app/PendingIntent;->getActivity(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;
+                
+                const-string v0, "AKIAIOSFODNN7EXAMPLE"
+                const-string v1, "~~R8{backend:dex,compilation-mode:release,min-api:24,pg-map-id:map-hash-sample,version:8.4.10}"
+                
+                return-void
+            .end method
+        """.trimIndent()
+        val dex = io.apkwarden.core.testutil.SmaliDexBuilder.assemble(smali)
         val dummySo = ByteArray(128).also {
             it[0] = 0x7F.toByte()
             it[1] = 'E'.code.toByte()

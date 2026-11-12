@@ -1,0 +1,396 @@
+package io.apkwarden.core.rules
+
+import io.apkwarden.core.dex.DexIndex
+import io.apkwarden.core.ingest.HardenedZipReader
+import io.apkwarden.core.model.*
+import io.apkwarden.core.testutil.SmaliDexBuilder
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+class RulesEngineTest {
+
+    private fun createContext(
+        smaliCode: String,
+        targetSdk: Int = 34,
+        minSdk: Int = 24,
+        exportedComponents: List<String> = emptyList(),
+        requestedPermissions: List<String> = emptyList(),
+        netConfig: NetworkSecurityConfig? = null
+    ): AnalysisContext {
+        val dexBytes = SmaliDexBuilder.assemble(smaliCode)
+        val baos = ByteArrayOutputStream()
+        ZipOutputStream(baos).use { zos ->
+            zos.putNextEntry(ZipEntry("classes.dex"))
+            zos.write(dexBytes)
+            zos.closeEntry()
+        }
+
+        val archive = HardenedZipReader("test.apk", baos.toByteArray())
+        val dexIndex = DexIndex.build(archive)
+
+        val components = exportedComponents.map {
+            Component(
+                type = ComponentType.ACTIVITY,
+                name = it,
+                exported = true,
+                exportStatus = ExportStatus.EXPLICIT_EXPORTED
+            )
+        }
+
+        val reqPerms = requestedPermissions.map { RequestedPermission(it) }
+
+        val attackSurface = AttackSurface(
+            packageName = "com.example.test",
+            versionCode = 1,
+            versionName = "1.0",
+            minSdk = minSdk,
+            targetSdk = targetSdk,
+            compileSdk = 34,
+            isDebuggable = false,
+            isTestOnly = false,
+            allowBackup = false,
+            dataExtractionRulesDefined = true,
+            requestedPermissions = reqPerms,
+            components = components,
+            networkSecurityConfig = netConfig
+        )
+
+        val fingerprint = StackFingerprint(
+            primaryStack = RuntimeStack.PURE_DEX,
+            detectedStacks = listOf(RuntimeStack.PURE_DEX),
+            packer = PackerDetection(false, null, null, "HIGH"),
+            compilerMarker = null,
+            nativeLibraries = emptyList(),
+            coverageStatement = CoverageStatement(
+                primaryStack = RuntimeStack.PURE_DEX,
+                isPacked = false,
+                packerName = null,
+                dexCoveragePct = 100,
+                nativeCodePresent = false,
+                nativeLibraryCount = 0,
+                blindSpots = emptyList<String>(),
+                notes = emptyList<String>()
+            )
+        )
+
+        return AnalysisContext(archive, attackSurface, fingerprint, dexIndex)
+    }
+
+    @Test
+    fun `flags insecure crypto ECB mode and passes secure GCM mode`() {
+        val vulnerableSmali = """
+            .class public Lcom/example/VulnerableCrypto;
+            .super Ljava/lang/Object;
+            
+            .method public encrypt()V
+                .registers 2
+                const-string v0, "AES/ECB/PKCS5Padding"
+                invoke-static {v0}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctxVuln = createContext(vulnerableSmali)
+        val findingsVuln = InsecureCryptoRule().analyze(ctxVuln)
+        assertThat(findingsVuln).hasSize(1)
+        assertThat(findingsVuln[0].id).isEqualTo("APK-SEC-011")
+        assertThat(findingsVuln[0].severity).isEqualTo(Severity.HIGH)
+
+        val secureSmali = """
+            .class public Lcom/example/SecureCrypto;
+            .super Ljava/lang/Object;
+            
+            .method public encrypt()V
+                .registers 2
+                const-string v0, "AES/GCM/NoPadding"
+                invoke-static {v0}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctxSec = createContext(secureSmali)
+        val findingsSec = InsecureCryptoRule().analyze(ctxSec)
+        assertThat(findingsSec).isEmpty()
+    }
+
+    @Test
+    fun `flags mutable pending intent on targetSdk 31+`() {
+        val smali = """
+            .class public Lcom/example/PendingIntentTest;
+            .super Ljava/lang/Object;
+            
+            .method public createIntent(Landroid/content/Context;Landroid/content/Intent;)V
+                .registers 6
+                const/4 v1, 0x0
+                const/high16 v3, 0x2000000
+                invoke-static {p0, v1, p1, v3}, Landroid/app/PendingIntent;->getActivity(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, targetSdk = 31)
+        val findings = MutablePendingIntentRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-002")
+        assertThat(findings[0].severity).isEqualTo(Severity.HIGH)
+    }
+
+    @Test
+    fun `flags dynamic receiver registration missing export flag on targetSdk 34`() {
+        val smali = """
+            .class public Lcom/example/ReceiverTest;
+            .super Ljava/lang/Object;
+            
+            .method public reg(Landroid/content/Context;Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)V
+                .registers 4
+                invoke-virtual {p1, p2, p3}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, targetSdk = 34)
+        val findings = DynamicReceiverExportRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-004")
+    }
+
+    @Test
+    fun `flags insecure custom X509TrustManager bypassing SSL`() {
+        val smali = """
+            .class public Lcom/example/InsecureTrustManager;
+            .super Ljava/lang/Object;
+            .implements Ljavax/net/ssl/X509TrustManager;
+            
+            .method public checkServerTrusted([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                return-void
+            .end method
+            
+            .method public checkClientTrusted([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                return-void
+            .end method
+            
+            .method public getAcceptedIssuers()[Ljava/security/cert/X509Certificate;
+                .registers 2
+                const/4 v0, 0x0
+                return-object v0
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = InsecureTrustManagerRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-013")
+        assertThat(findings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
+
+    @Test
+    fun `flags custom HostnameVerifier returning true unconditionally`() {
+        val smali = """
+            .class public Lcom/example/BadVerifier;
+            .super Ljava/lang/Object;
+            .implements Ljavax/net/ssl/HostnameVerifier;
+            
+            .method public verify(Ljava/lang/String;Ljavax/net/ssl/SSLSession;)Z
+                .registers 4
+                const/4 v0, 0x1
+                return v0
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = AllowAllHostnameVerifierRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-014")
+        assertThat(findings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
+
+    @Test
+    fun `flags zip slip vulnerability when canonical check is absent`() {
+        val smali = """
+            .class public Lcom/example/ZipExtractor;
+            .super Ljava/lang/Object;
+            
+            .method public unzip(Ljava/util/zip/ZipInputStream;)V
+                .registers 4
+                invoke-virtual {p1}, Ljava/util/zip/ZipInputStream;->getNextEntry()Ljava/util/zip/ZipEntry;
+                move-result-object v0
+                invoke-virtual {v0}, Ljava/util/zip/ZipEntry;->getName()Ljava/lang/String;
+                move-result-object v1
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = ZipSlipRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-006")
+    }
+
+    @Test
+    fun `flags dirty stream traversal when openInputStream uses unvalidated uri path segment in exported class`() {
+        val smali = """
+            .class public Lcom/example/ExportedHandler;
+            .super Ljava/lang/Object;
+            
+            .method public handleStream(Landroid/content/ContentResolver;Landroid/net/Uri;)V
+                .registers 4
+                invoke-virtual {p1, p2}, Landroid/content/ContentResolver;->openInputStream(Landroid/net/Uri;)Ljava/io/InputStream;
+                move-result-object v0
+                invoke-virtual {p2}, Landroid/net/Uri;->getLastPathSegment()Ljava/lang/String;
+                move-result-object v1
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, exportedComponents = listOf("com.example.ExportedHandler"))
+        val findings = DirtyStreamTraversalRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-005")
+        assertThat(findings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
+
+    @Test
+    fun `flags hardcoded AWS and Google API secrets`() {
+        val smali = """
+            .class public Lcom/example/SecretsDemo;
+            .super Ljava/lang/Object;
+            
+            .method public getKeys()V
+                .registers 3
+                const-string v0, "AKIAIOSFODNN7EXAMPLE"
+                const-string v1, "AIzaSyD-1234567890abcdefghijklmnopqrstu"
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = HardcodedSecretsRule().analyze(ctx)
+        assertThat(findings).hasSize(2)
+        assertThat(findings.map { it.title }).contains(
+            "Hardcoded AWS Access Key ID Detected",
+            "Hardcoded Google API Key Detected"
+        )
+    }
+
+    @Test
+    fun `flags SQL injection via dynamic concatenation in rawQuery`() {
+        val smali = """
+            .class public Lcom/example/SqlDemo;
+            .super Ljava/lang/Object;
+            
+            .method public query(Landroid/database/sqlite/SQLiteDatabase;Ljava/lang/String;)V
+                .registers 6
+                new-instance v0, Ljava/lang/StringBuilder;
+                invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+                const-string v1, "SELECT * FROM users WHERE name = "
+                invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                invoke-virtual {v0, p2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+                move-result-object v2
+                const/4 v3, 0x0
+                invoke-virtual {p1, v2, v3}, Landroid/database/sqlite/SQLiteDatabase;->rawQuery(Ljava/lang/String;[Ljava/lang/String;)Landroid/database/Cursor;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = SqlInjectionRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-015")
+    }
+
+    @Test
+    fun `flags world readable file mode`() {
+        val smali = """
+            .class public Lcom/example/FileModeDemo;
+            .super Ljava/lang/Object;
+            
+            .method public write(Landroid/content/Context;)V
+                .registers 4
+                const-string v0, "sensitive.dat"
+                const/4 v1, 0x1
+                invoke-virtual {p0, v0, v1}, Landroid/content/Context;->openFileOutput(Ljava/lang/String;I)Ljava/io/FileOutputStream;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = WorldReadableWritableRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-016")
+    }
+
+    @Test
+    fun `flags sensitive token stored in plaintext SharedPreferences`() {
+        val smali = """
+            .class public Lcom/example/PrefsDemo;
+            .super Ljava/lang/Object;
+            
+            .method public saveToken(Landroid/content/SharedPreferences${'$'}Editor;Ljava/lang/String;)V
+                .registers 4
+                const-string v0, "auth_token"
+                invoke-interface {p1, v0, p2}, Landroid/content/SharedPreferences${'$'}Editor;->putString(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences${'$'}Editor;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = InsecureSharedPrefsRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-020")
+    }
+
+    @Test
+    fun `flags arbitrary URL loaded into WebView in exported component`() {
+        val smali = """
+            .class public Lcom/example/ExportedWebActivity;
+            .super Landroid/app/Activity;
+            
+            .method public handleIntent(Landroid/webkit/WebView;)V
+                .registers 5
+                invoke-virtual {p0}, Landroid/app/Activity;->getIntent()Landroid/content/Intent;
+                move-result-object v0
+                const-string v1, "target_url"
+                invoke-virtual {v0, v1}, Landroid/content/Intent;->getStringExtra(Ljava/lang/String;)Ljava/lang/String;
+                move-result-object v2
+                invoke-virtual {p1, v2}, Landroid/webkit/WebView;->loadUrl(Ljava/lang/String;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, exportedComponents = listOf("com.example.ExportedWebActivity"))
+        val findings = WebViewArbitraryUrlRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-007")
+        assertThat(findings[0].severity).isEqualTo(Severity.HIGH)
+    }
+
+    @Test
+    fun `does not flag arbitrary WebView loadUrl when component is internal and unexported`() {
+        val smali = """
+            .class public Lcom/example/InternalWebActivity;
+            .super Landroid/app/Activity;
+            
+            .method public handleIntent(Landroid/webkit/WebView;)V
+                .registers 5
+                invoke-virtual {p0}, Landroid/app/Activity;->getIntent()Landroid/content/Intent;
+                move-result-object v0
+                const-string v1, "target_url"
+                invoke-virtual {v0, v1}, Landroid/content/Intent;->getStringExtra(Ljava/lang/String;)Ljava/lang/String;
+                move-result-object v2
+                invoke-virtual {p1, v2}, Landroid/webkit/WebView;->loadUrl(Ljava/lang/String;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        // Not exported!
+        val ctx = createContext(smali, exportedComponents = emptyList())
+        val findings = WebViewArbitraryUrlRule().analyze(ctx)
+        assertThat(findings).isEmpty() // Suppressed due to zero reachability!
+    }
+}
