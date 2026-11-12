@@ -61,10 +61,19 @@ data class IntentFilter(
 )
 
 @Serializable
+enum class ExportStatus {
+    EXPLICIT_EXPORTED,
+    IMPLICIT_EXPORTED,
+    EXPORTED_ON_LEGACY_ONLY,
+    NOT_EXPORTED
+}
+
+@Serializable
 data class Component(
     val type: ComponentType,
     val name: String,
     val exported: Boolean,
+    val exportStatus: ExportStatus = if (exported) ExportStatus.EXPLICIT_EXPORTED else ExportStatus.NOT_EXPORTED,
     val permission: String? = null,
     val readPermission: String? = null,
     val writePermission: String? = null,

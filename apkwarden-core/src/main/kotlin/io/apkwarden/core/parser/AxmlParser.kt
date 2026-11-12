@@ -14,8 +14,9 @@ data class AxmlAttribute(
 ) {
     val booleanValue: Boolean?
         get() = when (dataType) {
-            0x12 -> data != 0 // TYPE_INT_BOOLEAN
-            0x03 -> value.equals("true", ignoreCase = true) // TYPE_STRING
+            0x12 -> data != 0 // TYPE_INT_BOOLEAN: any non-zero is true (aapt writes 0xFFFFFFFF)
+            0x03 -> value.equals("true", ignoreCase = true) || value == "1"
+            0x10, 0x11 -> data != 0
             else -> null
         }
 
@@ -29,15 +30,34 @@ data class AxmlNode(
     val children: List<AxmlNode>,
     val text: String? = null
 ) {
-    fun findAttribute(name: String, namespace: String? = null): AxmlAttribute? {
+    fun findAttribute(name: String, resId: Int = 0, namespace: String? = null): AxmlAttribute? {
         return attributes.firstOrNull {
-            it.name == name && (namespace == null || it.namespace == namespace)
+            (resId != 0 && it.resourceId == resId) ||
+            (it.name == name && (namespace == null || it.namespace == namespace))
         } ?: attributes.firstOrNull { it.name == name }
     }
 
     fun findChildren(tag: String): List<AxmlNode> {
         return children.filter { it.tag == tag }
     }
+}
+
+object AndroidResIds {
+    const val ATTR_NAME = 0x01010003
+    const val ATTR_PERMISSION = 0x01010006
+    const val ATTR_READ_PERMISSION = 0x01010007
+    const val ATTR_WRITE_PERMISSION = 0x01010008
+    const val ATTR_EXPORTED = 0x01010010
+    const val ATTR_AUTHORITIES = 0x01010018
+    const val ATTR_GRANT_URI_PERMISSIONS = 0x0101001b
+    const val ATTR_SCHEME = 0x01010027
+    const val ATTR_HOST = 0x01010028
+    const val ATTR_PORT = 0x01010029
+    const val ATTR_PATH = 0x0101002a
+    const val ATTR_PATH_PREFIX = 0x0101002b
+    const val ATTR_PATH_PATTERN = 0x0101002c
+    const val ATTR_MIME_TYPE = 0x01010026
+    const val ATTR_AUTOVERIFY = 0x010104e1
 }
 
 class AxmlParser(private val bytes: ByteArray) {

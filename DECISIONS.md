@@ -66,3 +66,18 @@ This document tracks all major architectural decisions, trade-offs, and design r
 * **Context:** Developers need a way to track attack surface drift across pull requests without needing an old APK binary on hand.
 * **Decision:** Build a multi-config aware `resources.arsc` resolver that resolves `@bool/x`, `@string/x`, and qualifiers (e.g. `values-v31`), calculates true `targetSdk`-aware component export status, deep-link cross products, and generates a deterministic `surface.lock.json`.
 * **Why:** Allows engineering teams to commit `surface.lock.json` to their git repository (similar to Kotlin's `apiDump` / `apiCheck`). Any PR that accidentally exports an Activity, adds a dangerous permission, or alters network security configuration shows up as an immediate git diff in GitHub PR reviews.
+
+
+---
+
+## ADR 007: Milestone 1 Parser Hardening & Export Nuances (Post-Consult Refinements)
+* **Date:** 2026-11-12
+* **Status:** Accepted
+* **Context:** A staff-level adversarial review of our initial Milestone 1 parser identified five critical Android OS and binary parser edge cases:
+  1. **ContentProvider Exporting:** Unlike Activities/Services/Receivers, ContentProvider default export is NEVER determined by `<intent-filter>`. By Android platform rules, ContentProviders default to `exported=true` if `targetSdk <= 16`, and `exported=false` if `targetSdk > 16`.
+  2. **Three-State Export Classification:** For components on `targetSdk >= 31` with an `<intent-filter>` but missing `android:exported`, Android 12+ refuses to install them, but devices running Android < 12 install and treat them as exported. We must classify this as a distinct state: `EXPLICIT`, `IMPLICIT`, `LEGACY_DEVICE_ONLY`, or `NOT_EXPORTED`.
+  3. **Application-Level Permission Inheritance:** Components lacking an explicit `android:permission` inherit `<application android:permission="...">`. Activity aliases inherit target activity permissions if not specified.
+  4. **AXML Attribute Identification by Android Resource ID:** Malicious APKs strip or rename attribute strings in the string pool. Attribute lookups must check standard Android resource IDs (`0x01010010` for `exported`, `0x01010003` for `name`, `0x01010006` for `permission`) in addition to string names.
+  5. **Network Security Config Platform Defaults:** Cleartext defaults depend on `targetSdk` (allowed by default on `targetSdk <= 27`, blocked on `targetSdk >= 28`); user CA cert trust defaults to true on `targetSdk <= 23`, false on `targetSdk >= 24`.
+  6. **Sanitization:** Attacker-controlled package, component, and deep link strings must strip control characters and ANSI escapes to prevent terminal injection.
+* **Decision:** Implemented these six refinements into the Milestone 1 core engine before proceeding to Milestone 2.

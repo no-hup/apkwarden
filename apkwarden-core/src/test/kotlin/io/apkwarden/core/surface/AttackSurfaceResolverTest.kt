@@ -46,6 +46,64 @@ class AttackSurfaceResolverTest {
         val comp = surface.components.first { it.name == "com.example.test.ImplicitExportActivity" }
         // On targetSdk 30, having an intent-filter makes it IMPLICITLY EXPORTED!
         assertThat(comp.exported).isTrue()
+        assertThat(comp.exportStatus).isEqualTo(io.apkwarden.core.model.ExportStatus.IMPLICIT_EXPORTED)
+    }
+
+    @Test
+    fun `resolves provider default export by targetSdk rather than intent filters`() {
+        // Provider on targetSdk 16 with no attribute -> default exported=true
+        val provNode16 = AxmlNode(
+            tag = "provider",
+            attributes = listOf(AxmlAttribute(null, "name", ".LegacyProvider", ".LegacyProvider", 0, 3, 0)),
+            children = emptyList()
+        )
+        val app16 = AxmlNode(tag = "application", attributes = emptyList(), children = listOf(provNode16))
+        val usesSdk16 = AxmlNode(tag = "uses-sdk", attributes = listOf(AxmlAttribute(null, "targetSdkVersion", "16", "16", 0, 16, 16)), children = emptyList())
+        val manifest16 = AxmlNode(tag = "manifest", attributes = listOf(AxmlAttribute(null, "package", "com.example.test", "com.example.test", 0, 3, 0)), children = listOf(usesSdk16, app16))
+
+        val surface16 = AttackSurfaceResolver(HardenedZipReader("test.apk", createEmptyZip()), manifest16, null).resolve()
+        val p16 = surface16.components.first { it.name == "com.example.test.LegacyProvider" }
+        assertThat(p16.exported).isTrue()
+        assertThat(p16.exportStatus).isEqualTo(io.apkwarden.core.model.ExportStatus.IMPLICIT_EXPORTED)
+
+        // Provider on targetSdk 17+ with no attribute -> default exported=false (even with intent-filter!)
+        val dummyFilter = AxmlNode(tag = "intent-filter", attributes = emptyList(), children = emptyList())
+        val provNode17 = AxmlNode(
+            tag = "provider",
+            attributes = listOf(AxmlAttribute(null, "name", ".ModernProvider", ".ModernProvider", 0, 3, 0)),
+            children = listOf(dummyFilter)
+        )
+        val app17 = AxmlNode(tag = "application", attributes = emptyList(), children = listOf(provNode17))
+        val usesSdk17 = AxmlNode(tag = "uses-sdk", attributes = listOf(AxmlAttribute(null, "targetSdkVersion", "17", "17", 0, 16, 17)), children = emptyList())
+        val manifest17 = AxmlNode(tag = "manifest", attributes = listOf(AxmlAttribute(null, "package", "com.example.test", "com.example.test", 0, 3, 0)), children = listOf(usesSdk17, app17))
+
+        val surface17 = AttackSurfaceResolver(HardenedZipReader("test.apk", createEmptyZip()), manifest17, null).resolve()
+        val p17 = surface17.components.first { it.name == "com.example.test.ModernProvider" }
+        assertThat(p17.exported).isFalse()
+        assertThat(p17.exportStatus).isEqualTo(io.apkwarden.core.model.ExportStatus.NOT_EXPORTED)
+    }
+
+    @Test
+    fun `inherits application level permission when component specifies none`() {
+        val actNode = AxmlNode(
+            tag = "activity",
+            attributes = listOf(AxmlAttribute(null, "name", ".SecureActivity", null, 0, 3, 0)),
+            children = emptyList()
+        )
+        val appNode = AxmlNode(
+            tag = "application",
+            attributes = listOf(AxmlAttribute(null, "permission", "com.example.APP_PERM", null, 0, 3, 0)),
+            children = listOf(actNode)
+        )
+        val manifestNode = AxmlNode(
+            tag = "manifest",
+            attributes = listOf(AxmlAttribute(null, "package", "com.example.test", null, 0, 3, 0)),
+            children = listOf(appNode)
+        )
+
+        val surface = AttackSurfaceResolver(HardenedZipReader("test.apk", createEmptyZip()), manifestNode, null).resolve()
+        val act = surface.components.first { it.name == "com.example.test.SecureActivity" }
+        assertThat(act.permission).isEqualTo("com.example.APP_PERM")
     }
 
     @Test

@@ -2,6 +2,7 @@ package io.apkwarden.core.surface
 
 import io.apkwarden.core.ingest.ApkArchive
 import io.apkwarden.core.model.*
+import io.apkwarden.core.parser.AndroidResIds
 import io.apkwarden.core.parser.ArscParser
 import io.apkwarden.core.parser.AxmlNode
 import io.apkwarden.core.parser.AxmlParser
@@ -13,9 +14,10 @@ class AttackSurfaceResolver(
 ) {
 
     fun resolve(): AttackSurface {
-        val packageName = manifestNode.findAttribute("package")?.value ?: "unknown.package"
+        val rawPackageName = manifestNode.findAttribute("package")?.value ?: "unknown.package"
+        val packageName = sanitizeText(rawPackageName)
         val versionCode = manifestNode.findAttribute("versionCode")?.value?.toLongOrNull() ?: 1L
-        val versionName = manifestNode.findAttribute("versionName")?.value
+        val versionName = manifestNode.findAttribute("versionName")?.value?.let { sanitizeText(it) }
 
         // SDK versions
         val usesSdkNode = manifestNode.findChildren("uses-sdk").firstOrNull()
@@ -25,7 +27,7 @@ class AttackSurfaceResolver(
 
         // Permissions declared
         val declaredPermissions = manifestNode.findChildren("permission").map { pNode ->
-            val name = pNode.findAttribute("name")?.value ?: ""
+            val name = sanitizeText(pNode.findAttribute("name", AndroidResIds.ATTR_NAME)?.value ?: "")
             val rawProt = pNode.findAttribute("protectionLevel")?.value
             val level = parseProtectionLevel(rawProt)
             DeclaredPermission(name, level, rawProt)
@@ -33,7 +35,7 @@ class AttackSurfaceResolver(
 
         // Permissions requested
         val requestedPermissions = manifestNode.findChildren("uses-permission").map { upNode ->
-            val name = upNode.findAttribute("name")?.value ?: ""
+            val name = sanitizeText(upNode.findAttribute("name", AndroidResIds.ATTR_NAME)?.value ?: "")
             val maxSdk = upNode.findAttribute("maxSdkVersion")?.value?.toIntOrNull()
             RequestedPermission(name, maxSdk)
         }
@@ -44,10 +46,11 @@ class AttackSurfaceResolver(
         val isTestOnly = appNode?.findAttribute("testOnly")?.booleanValue ?: false
         val allowBackup = appNode?.findAttribute("allowBackup")?.booleanValue ?: true
         val dataExtractionRulesDefined = appNode?.findAttribute("dataExtractionRules") != null
-        val applicationClass = resolveClassName(appNode?.findAttribute("name")?.value, packageName)
+        val applicationClass = resolveClassName(appNode?.findAttribute("name", AndroidResIds.ATTR_NAME)?.value, packageName)
+        val appPermission = appNode?.findAttribute("permission", AndroidResIds.ATTR_PERMISSION)?.value?.let { sanitizeText(it) }
 
         // Network Security Config
-        val networkSecurityConfig = resolveNetworkSecurityConfig(appNode)
+        val networkSecurityConfig = resolveNetworkSecurityConfig(appNode, targetSdk)
 
         // Components & Deep Links
         val components = mutableListOf<Component>()
@@ -57,7 +60,7 @@ class AttackSurfaceResolver(
         if (appNode != null) {
             // Activities
             for (node in appNode.findChildren("activity")) {
-                val comp = parseComponent(node, ComponentType.ACTIVITY, packageName, targetSdk)
+                val comp = parseComponent(node, ComponentType.ACTIVITY, packageName, targetSdk, appPermission = appPermission)
                 components.add(comp)
                 deepLinks.addAll(extractDeepLinks(comp))
             }
@@ -65,26 +68,25 @@ class AttackSurfaceResolver(
             // Activity Aliases
             for (node in appNode.findChildren("activity-alias")) {
                 val targetAct = resolveClassName(node.findAttribute("targetActivity")?.value, packageName)
-                val comp = parseComponent(node, ComponentType.ACTIVITY_ALIAS, packageName, targetSdk, targetAct)
+                val comp = parseComponent(node, ComponentType.ACTIVITY_ALIAS, packageName, targetSdk, targetAct, appPermission)
                 components.add(comp)
                 deepLinks.addAll(extractDeepLinks(comp))
             }
 
             // Services
             for (node in appNode.findChildren("service")) {
-                components.add(parseComponent(node, ComponentType.SERVICE, packageName, targetSdk))
+                components.add(parseComponent(node, ComponentType.SERVICE, packageName, targetSdk, appPermission = appPermission))
             }
 
             // Receivers
             for (node in appNode.findChildren("receiver")) {
-                components.add(parseComponent(node, ComponentType.RECEIVER, packageName, targetSdk))
+                components.add(parseComponent(node, ComponentType.RECEIVER, packageName, targetSdk, appPermission = appPermission))
             }
 
             // Providers
             for (node in appNode.findChildren("provider")) {
-                val comp = parseComponent(node, ComponentType.PROVIDER, packageName, targetSdk)
+                val comp = parseComponent(node, ComponentType.PROVIDER, packageName, targetSdk, appPermission = appPermission)
                 components.add(comp)
-                // Check if FileProvider
                 if (comp.name.contains("FileProvider") || comp.metadata.containsKey("android.support.FILE_PROVIDER_PATHS")) {
                     fileProviderPaths.addAll(resolveFileProviderPaths(node))
                 }
@@ -117,40 +119,59 @@ class AttackSurfaceResolver(
         type: ComponentType,
         packageName: String,
         targetSdk: Int,
-        targetActivity: String? = null
+        targetActivity: String? = null,
+        appPermission: String? = null
     ): Component {
-        val rawName = node.findAttribute("name")?.value ?: "Unknown${type.name}"
-        val name = resolveClassName(rawName, packageName)
+        val rawName = node.findAttribute("name", AndroidResIds.ATTR_NAME)?.value ?: "Unknown${type.name}"
+        val name = sanitizeText(resolveClassName(rawName, packageName))
 
         val intentFilters = node.findChildren("intent-filter").map { parseIntentFilter(it) }
 
-        // Exported status resolution
-        val exportedAttr = node.findAttribute("exported")
-        val exported = if (exportedAttr != null) {
-            resolveBooleanAttribute(exportedAttr, targetSdk)
-        } else {
-            // Implicit export rule: If targetSdk < 31 and has intent filters, true; else false
-            if (intentFilters.isNotEmpty() && targetSdk < 31) {
-                true
+        // Exported status resolution per component type
+        val exportedAttr = node.findAttribute("exported", AndroidResIds.ATTR_EXPORTED)
+        val (exported, exportStatus) = if (type == ComponentType.PROVIDER) {
+            if (exportedAttr != null) {
+                val isExp = resolveBooleanAttribute(exportedAttr, targetSdk)
+                isExp to (if (isExp) ExportStatus.EXPLICIT_EXPORTED else ExportStatus.NOT_EXPORTED)
             } else {
-                false
+                // By Android platform rules, ContentProviders default to exported=true on targetSdk <= 16, false thereafter
+                val isExp = targetSdk <= 16
+                isExp to (if (isExp) ExportStatus.IMPLICIT_EXPORTED else ExportStatus.NOT_EXPORTED)
+            }
+        } else {
+            if (exportedAttr != null) {
+                val isExp = resolveBooleanAttribute(exportedAttr, targetSdk)
+                isExp to (if (isExp) ExportStatus.EXPLICIT_EXPORTED else ExportStatus.NOT_EXPORTED)
+            } else {
+                if (intentFilters.isNotEmpty()) {
+                    if (targetSdk < 31) {
+                        true to ExportStatus.IMPLICIT_EXPORTED
+                    } else {
+                        // On targetSdk >= 31, Android 12+ refuses to install missing exported attribute,
+                        // but pre-Android 12 devices install and treat it as exported!
+                        true to ExportStatus.EXPORTED_ON_LEGACY_ONLY
+                    }
+                } else {
+                    false to ExportStatus.NOT_EXPORTED
+                }
             }
         }
 
-        val permission = node.findAttribute("permission")?.value
-        val readPermission = node.findAttribute("readPermission")?.value
-        val writePermission = node.findAttribute("writePermission")?.value
-        val grantUriPermissions = node.findAttribute("grantUriPermissions")?.booleanValue ?: false
+        val directPermission = node.findAttribute("permission", AndroidResIds.ATTR_PERMISSION)?.value?.let { sanitizeText(it) }
+        val permission = directPermission ?: appPermission
+        val readPermission = node.findAttribute("readPermission", AndroidResIds.ATTR_READ_PERMISSION)?.value?.let { sanitizeText(it) }
+        val writePermission = node.findAttribute("writePermission", AndroidResIds.ATTR_WRITE_PERMISSION)?.value?.let { sanitizeText(it) }
+        val grantUriPermissions = node.findAttribute("grantUriPermissions", AndroidResIds.ATTR_GRANT_URI_PERMISSIONS)?.booleanValue ?: false
 
-        val authorities = node.findAttribute("authorities")?.value?.split(";")?.map { it.trim() } ?: emptyList()
+        val authorities = node.findAttribute("authorities", AndroidResIds.ATTR_AUTHORITIES)?.value?.split(";")?.map { sanitizeText(it.trim()) } ?: emptyList()
 
         // Metadata
         val metadata = mutableMapOf<String, String>()
         for (mNode in node.findChildren("meta-data")) {
-            val mName = mNode.findAttribute("name")?.value
+            val mName = mNode.findAttribute("name", AndroidResIds.ATTR_NAME)?.value
             val mVal = mNode.findAttribute("value")?.value ?: mNode.findAttribute("resource")?.value
             if (mName != null && mVal != null) {
-                metadata[mName] = mVal
+                metadata[sanitizeText(mName)] = sanitizeText(mVal)
             }
         }
 
@@ -158,11 +179,12 @@ class AttackSurfaceResolver(
             type = type,
             name = name,
             exported = exported,
+            exportStatus = exportStatus,
             permission = permission,
             readPermission = readPermission,
             writePermission = writePermission,
             intentFilters = intentFilters,
-            targetActivity = targetActivity,
+            targetActivity = targetActivity?.let { sanitizeText(it) },
             grantUriPermissions = grantUriPermissions,
             authorities = authorities,
             metadata = metadata,
@@ -180,18 +202,20 @@ class AttackSurfaceResolver(
     }
 
     private fun parseIntentFilter(node: AxmlNode): IntentFilter {
-        val actions = node.findChildren("action").mapNotNull { it.findAttribute("name")?.value }
-        val categories = node.findChildren("category").mapNotNull { it.findAttribute("name")?.value }
+        val actions = node.findChildren("action").mapNotNull { it.findAttribute("name", AndroidResIds.ATTR_NAME)?.value }.map { sanitizeText(it) }
+        val categories = node.findChildren("category").mapNotNull { it.findAttribute("name", AndroidResIds.ATTR_NAME)?.value }.map { sanitizeText(it) }
         val priority = node.findAttribute("priority")?.value?.toIntOrNull() ?: 0
-        val autoVerify = node.findAttribute("autoVerify")?.booleanValue ?: false
+        val autoVerify = node.findAttribute("autoVerify", AndroidResIds.ATTR_AUTOVERIFY)?.booleanValue ?: false
 
         val dataNodes = node.findChildren("data")
-        val schemes = dataNodes.mapNotNull { it.findAttribute("scheme")?.value }.distinct()
-        val hosts = dataNodes.mapNotNull { it.findAttribute("host")?.value }.distinct()
+        val schemes = dataNodes.mapNotNull { it.findAttribute("scheme", AndroidResIds.ATTR_SCHEME)?.value }.map { sanitizeText(it) }.distinct()
+        val hosts = dataNodes.mapNotNull { it.findAttribute("host", AndroidResIds.ATTR_HOST)?.value }.map { sanitizeText(it) }.distinct()
         val paths = dataNodes.mapNotNull {
-            it.findAttribute("path")?.value ?: it.findAttribute("pathPrefix")?.value ?: it.findAttribute("pathPattern")?.value
-        }.distinct()
-        val mimeTypes = dataNodes.mapNotNull { it.findAttribute("mimeType")?.value }.distinct()
+            it.findAttribute("path", AndroidResIds.ATTR_PATH)?.value ?:
+            it.findAttribute("pathPrefix", AndroidResIds.ATTR_PATH_PREFIX)?.value ?:
+            it.findAttribute("pathPattern", AndroidResIds.ATTR_PATH_PATTERN)?.value
+        }.map { sanitizeText(it) }.distinct()
+        val mimeTypes = dataNodes.mapNotNull { it.findAttribute("mimeType", AndroidResIds.ATTR_MIME_TYPE)?.value }.map { sanitizeText(it) }.distinct()
 
         return IntentFilter(
             actions = actions,
@@ -214,20 +238,21 @@ class AttackSurfaceResolver(
             val isDefault = filter.categories.contains("android.intent.category.DEFAULT")
 
             if ((isViewAction && (isBrowsable || isDefault)) || filter.dataSchemes.isNotEmpty()) {
-                val schemes = if (filter.dataSchemes.isNotEmpty()) filter.dataSchemes else listOf("content")
-                val hosts = if (filter.dataHosts.isNotEmpty()) filter.dataHosts else listOf(null)
-                val paths = if (filter.dataPaths.isNotEmpty()) filter.dataPaths else listOf(null)
+                val schemes = filter.dataSchemes.ifEmpty { listOf("content") }
+                val hosts = filter.dataHosts.ifEmpty { listOf(null) }
+                val paths = filter.dataPaths.ifEmpty { listOf(null) }
 
-                // Cartesian product of scheme x host x path
+                var count = 0
                 for (scheme in schemes) {
                     for (host in hosts) {
                         for (path in paths) {
+                            if (count++ >= 50) break
                             val isAutoVerify = filter.autoVerify && (scheme == "http" || scheme == "https")
                             links.add(
                                 DeepLink(
-                                    scheme = scheme,
-                                    host = host,
-                                    path = path,
+                                    scheme = sanitizeText(scheme),
+                                    host = host?.let { sanitizeText(it) },
+                                    path = path?.let { sanitizeText(it) },
                                     autoVerify = isAutoVerify,
                                     targetComponent = component.name
                                 )
@@ -259,13 +284,13 @@ class AttackSurfaceResolver(
                 val path = child.findAttribute("path")?.value ?: ""
 
                 val isRoot = tag == "root-path"
-                val isBroad = path == "." || path.isEmpty()
+                val isBroad = path == "." || path.isEmpty() || path == "/"
 
                 paths.add(
                     FileProviderPath(
                         tag = tag,
-                        name = name,
-                        path = path,
+                        name = sanitizeText(name),
+                        path = sanitizeText(path),
                         isRootPath = isRoot,
                         isBroadWildcard = isBroad
                     )
@@ -278,27 +303,30 @@ class AttackSurfaceResolver(
         return paths
     }
 
-    private fun resolveNetworkSecurityConfig(appNode: AxmlNode?): NetworkSecurityConfig? {
+    private fun resolveNetworkSecurityConfig(appNode: AxmlNode?, targetSdk: Int): NetworkSecurityConfig? {
         val attr = appNode?.findAttribute("networkSecurityConfig") ?: return null
         val xmlPath = resolveResourcePath(attr.data, attr.value) ?: return null
 
         val bytes = archive.getEntryBytes(xmlPath) ?: return null
         return try {
             val xml = AxmlParser(bytes).parse()
-            parseNetworkSecurityXml(xml)
+            parseNetworkSecurityXml(xml, targetSdk)
         } catch (_: Exception) {
             null
         }
     }
 
-    private fun parseNetworkSecurityXml(root: AxmlNode): NetworkSecurityConfig {
-        var baseCleartext = true
-        var globalUserTrust = false
+    private fun parseNetworkSecurityXml(root: AxmlNode, targetSdk: Int): NetworkSecurityConfig {
+        // Platform defaults by targetSdk:
+        // Cleartext allowed by default on targetSdk <= 27, disallowed on targetSdk >= 28
+        var baseCleartext = targetSdk <= 27
+        // User certs trusted by default on targetSdk <= 23, disallowed on targetSdk >= 24
+        var globalUserTrust = targetSdk <= 23
         val domainConfigs = mutableListOf<NetworkDomainConfig>()
 
         val baseConfig = root.findChildren("base-config").firstOrNull()
         if (baseConfig != null) {
-            baseCleartext = baseConfig.findAttribute("cleartextTrafficPermitted")?.booleanValue ?: true
+            baseCleartext = baseConfig.findAttribute("cleartextTrafficPermitted")?.booleanValue ?: baseCleartext
             val trustAnchors = baseConfig.findChildren("trust-anchors").firstOrNull()
             if (trustAnchors?.findChildren("certificates")?.any { it.findAttribute("src")?.value == "user" } == true) {
                 globalUserTrust = true
@@ -309,13 +337,15 @@ class AttackSurfaceResolver(
             val cleartext = domainNode.findAttribute("cleartextTrafficPermitted")?.booleanValue ?: baseCleartext
             val subdomains = domainNode.findChildren("domain").any { it.findAttribute("includeSubdomains")?.booleanValue ?: false }
             val domainNodeChild = domainNode.findChildren("domain").firstOrNull()
-            val domainName = domainNodeChild?.findAttribute("name")?.value ?: domainNodeChild?.text ?: "unknown"
+            val domainName = sanitizeText(domainNodeChild?.findAttribute("name")?.value ?: domainNodeChild?.text ?: "unknown")
 
             val trustAnchors = domainNode.findChildren("trust-anchors").firstOrNull()
             val userTrust = trustAnchors?.findChildren("certificates")?.any { it.findAttribute("src")?.value == "user" } == true
 
             val pins = domainNode.findChildren("pin-set").flatMap { ps ->
-                ps.findChildren("pin").mapNotNull { it.findAttribute("digest")?.value ?: it.text }
+                ps.findChildren("pin").mapNotNull { pinNode ->
+                    (pinNode.findAttribute("digest")?.value ?: pinNode.text)?.let { sanitizeText(it) }
+                }
             }
 
             domainConfigs.add(
@@ -334,6 +364,11 @@ class AttackSurfaceResolver(
             domainConfigs = domainConfigs,
             trustUserCertsGlobally = globalUserTrust
         )
+    }
+
+    private fun sanitizeText(input: String): String {
+        return input.replace(Regex("""\u001B\[[;?0-9]*[a-zA-Z]"""), "")
+            .replace(Regex("""[\u0000-\u001F\u007F-\u009F]"""), "")
     }
 
     private fun resolveResourcePath(resId: Int, rawValue: String?): String? {
