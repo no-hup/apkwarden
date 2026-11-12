@@ -216,11 +216,14 @@ class RulesEngineTest {
             .super Ljava/lang/Object;
             
             .method public unzip(Ljava/util/zip/ZipInputStream;)V
-                .registers 4
+                .registers 6
                 invoke-virtual {p1}, Ljava/util/zip/ZipInputStream;->getNextEntry()Ljava/util/zip/ZipEntry;
                 move-result-object v0
                 invoke-virtual {v0}, Ljava/util/zip/ZipEntry;->getName()Ljava/lang/String;
                 move-result-object v1
+                new-instance v2, Ljava/io/File;
+                const-string v3, "/sdcard/extracted"
+                invoke-direct {v2, v3, v1}, Ljava/io/File;-><init>(Ljava/lang/String;Ljava/lang/String;)V
                 return-void
             .end method
         """.trimIndent()
@@ -392,5 +395,127 @@ class RulesEngineTest {
         val ctx = createContext(smali, exportedComponents = emptyList())
         val findings = WebViewArbitraryUrlRule().analyze(ctx)
         assertThat(findings).isEmpty() // Suppressed due to zero reachability!
+    }
+
+    @Test
+    fun `flags webview ssl bypass when onReceivedSslError calls proceed`() {
+        val smali = """
+            .class public Lcom/example/InsecureWebClient;
+            .super Landroid/webkit/WebViewClient;
+            
+            .method public onReceivedSslError(Landroid/webkit/WebView;Landroid/webkit/SslErrorHandler;Landroid/net/http/SslError;)V
+                .registers 4
+                invoke-virtual {p2}, Landroid/webkit/SslErrorHandler;->proceed()V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = WebViewSslBypassRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-021")
+        assertThat(findings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
+
+    @Test
+    fun `does not flag RSA ECB OAEP padding cipher`() {
+        val smali = """
+            .class public Lcom/example/RsaCipherDemo;
+            .super Ljava/lang/Object;
+            
+            .method public encrypt()V
+                .registers 2
+                const-string v0, "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
+                invoke-static {v0}, Ljavax/crypto/Cipher;->getInstance(Ljava/lang/String;)Ljavax/crypto/Cipher;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = InsecureCryptoRule().analyze(ctx)
+        assertThat(findings).isEmpty() // Excluded from false positive!
+    }
+
+    @Test
+    fun `does not flag explicit Intent constructor in PendingIntent`() {
+        val smali = """
+            .class public Lcom/example/ExplicitPendingIntent;
+            .super Ljava/lang/Object;
+            
+            .method public makeIntent(Landroid/content/Context;)V
+                .registers 6
+                new-instance v0, Landroid/content/Intent;
+                const-class v1, Lcom/example/ExplicitPendingIntent;
+                invoke-direct {v0, p1, v1}, Landroid/content/Intent;-><init>(Landroid/content/Context;Ljava/lang/Class;)V
+                const/4 v2, 0x0
+                const/high16 v3, 0x4000000
+                invoke-static {p1, v2, v0, v3}, Landroid/app/PendingIntent;->getActivity(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = ImplicitPendingIntentRule().analyze(ctx)
+        assertThat(findings).isEmpty()
+    }
+
+    @Test
+    fun `does not flag registerReceiver with null receiver battery check`() {
+        val smali = """
+            .class public Lcom/example/BatteryCheck;
+            .super Ljava/lang/Object;
+            
+            .method public check(Landroid/content/Context;Landroid/content/IntentFilter;)V
+                .registers 4
+                const/4 v0, 0x0
+                invoke-virtual {p1, v0, p2}, Landroid/content/Context;->registerReceiver(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, targetSdk = 34)
+        val findings = DynamicReceiverExportRule().analyze(ctx)
+        assertThat(findings).isEmpty()
+    }
+
+    @Test
+    fun `seeds intent parameter in exported onReceive and detects redirection`() {
+        val smali = """
+            .class public Lcom/example/ExportedReceiver;
+            .super Landroid/content/BroadcastReceiver;
+            
+            .method public onReceive(Landroid/content/Context;Landroid/content/Intent;)V
+                .registers 3
+                invoke-virtual {p1, p2}, Landroid/content/Context;->startActivity(Landroid/content/Intent;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, exportedComponents = listOf("com.example.ExportedReceiver"))
+        val findings = IntentRedirectionRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-001")
+        assertThat(findings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
+
+    @Test
+    fun `does not flag intent redirection when intent is sanitized with setPackage`() {
+        val smali = """
+            .class public Lcom/example/SanitizedReceiver;
+            .super Landroid/content/BroadcastReceiver;
+            
+            .method public onReceive(Landroid/content/Context;Landroid/content/Intent;)V
+                .registers 4
+                invoke-virtual {p1}, Landroid/content/Context;->getPackageName()Ljava/lang/String;
+                move-result-object v0
+                invoke-virtual {p2, v0}, Landroid/content/Intent;->setPackage(Ljava/lang/String;)Landroid/content/Intent;
+                invoke-virtual {p1, p2}, Landroid/content/Context;->startActivity(Landroid/content/Intent;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, exportedComponents = listOf("com.example.SanitizedReceiver"))
+        val findings = IntentRedirectionRule().analyze(ctx)
+        assertThat(findings).isEmpty()
     }
 }

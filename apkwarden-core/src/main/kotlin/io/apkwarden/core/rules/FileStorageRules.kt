@@ -29,12 +29,12 @@ class DirtyStreamTraversalRule : Rule {
             if (!isExported) continue
 
             val analyzer = MethodAnalyzer(cs.method)
+            val hasDisplayName = analyzer.containsStringLiteral { it == "_display_name" || it == "display_name" }
             val hasLastPathSegment = analyzer.containsCallTo("android.net.Uri", "getLastPathSegment") ||
-                    analyzer.containsCallTo("android.net.Uri", "getPath")
-            val hasCanonicalCheck = analyzer.containsCallTo("java.io.File", "getCanonicalPath") ||
-                    analyzer.containsCallTo("java.io.File", "getCanonicalFile")
+                    analyzer.containsCallTo("android.net.Uri", "getPath") || hasDisplayName
+            val hasSanitization = analyzer.hasPathSanitization()
 
-            if (hasLastPathSegment && !hasCanonicalCheck) {
+            if (hasLastPathSegment && !hasSanitization) {
                 findings.add(
                     Finding(
                         id = id,
@@ -74,10 +74,11 @@ class ZipSlipRule : Rule {
         for (cs in getNextEntryCalls) {
             val analyzer = MethodAnalyzer(cs.method)
             val hasGetEntryName = analyzer.containsCallTo("java.util.zip.ZipEntry", "getName")
-            val hasCanonicalCheck = analyzer.containsCallTo("java.io.File", "getCanonicalPath") ||
-                    analyzer.containsCallTo("java.io.File", "getCanonicalFile")
+            val hasFileWrite = analyzer.containsCallTo("java.io.File", "<init>") ||
+                    analyzer.containsCallTo("java.io.FileOutputStream", "<init>")
+            val hasSanitization = analyzer.hasPathSanitization()
 
-            if (hasGetEntryName && !hasCanonicalCheck) {
+            if (hasGetEntryName && hasFileWrite && !hasSanitization) {
                 findings.add(
                     Finding(
                         id = id,

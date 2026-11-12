@@ -21,7 +21,8 @@ object RuleRegistry {
         HardcodedSecretsRule(),
         CleartextTrafficRule(),
         OverprivilegedPermissionsRule(),
-        InsecureSharedPrefsRule()
+        InsecureSharedPrefsRule(),
+        WebViewSslBypassRule()
     )
 
     fun getRuleById(id: String): Rule? = allRules.firstOrNull { it.id.equals(id, ignoreCase = true) }

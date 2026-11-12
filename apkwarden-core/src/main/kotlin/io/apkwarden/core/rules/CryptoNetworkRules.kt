@@ -3,6 +3,7 @@ package io.apkwarden.core.rules
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
 import io.apkwarden.core.dex.MethodAnalyzer
 import io.apkwarden.core.dex.RegisterValue
@@ -43,7 +44,7 @@ class InsecureCryptoRule : Rule {
                         isWeak = true
                         reason = "Cipher.getInstance(\"AES\") defaults to AES/ECB mode without an initialization vector (IV)"
                     }
-                    str.contains("ECB", ignoreCase = true) -> {
+                    str.contains("ECB", ignoreCase = true) && !str.startsWith("RSA", ignoreCase = true) -> {
                         isWeak = true
                         reason = "ECB mode ($str) does not hide data patterns and is vulnerable to block replay attacks"
                     }
@@ -136,11 +137,21 @@ class InsecureTrustManagerRule : Rule {
         val findings = mutableListOf<Finding>()
 
         for ((className, classDef) in context.dexIndex.classDefs) {
-            if (context.dexIndex.hierarchy.isSubclassOf(className, "javax.net.ssl.X509TrustManager")) {
+            val isTrustManager = context.dexIndex.hierarchy.isSubclassOf(className, "javax.net.ssl.X509TrustManager") ||
+                    context.dexIndex.hierarchy.isSubclassOf(className, "javax.net.ssl.X509ExtendedTrustManager")
+            if (isTrustManager) {
                 for (method in classDef.methods) {
                     if (method.name == "checkServerTrusted") {
-                        val impl = method.implementation
-                        val instructions = impl?.instructions?.toList() ?: emptyList()
+                        val impl = method.implementation ?: continue
+                        val instructions = impl.instructions.toList()
+
+                        // If the method delegates to another TrustManager, suppress
+                        val delegates = instructions.any { inst ->
+                            if (inst is ReferenceInstruction) {
+                                (inst.reference as? MethodReference)?.name == "checkServerTrusted"
+                            } else false
+                        }
+                        if (delegates) continue
 
                         // If empty method (e.g. only return-void, 1 instruction), or no throw / validation
                         val hasThrow = instructions.any { it.opcode == Opcode.THROW }
@@ -267,8 +278,9 @@ class CleartextTrafficRule : Rule {
         val findings = mutableListOf<Finding>()
         val netConfig = context.attackSurface.networkSecurityConfig
 
-        // Only flag if cleartext traffic is permitted
-        val permitsCleartext = netConfig?.baseCleartextPermitted ?: (context.attackSurface.targetSdk < 28)
+        // Only flag if cleartext traffic is permitted via NSC, manifest, or targetSdk < 28
+        val permitsCleartext = (context.attackSurface.usesCleartextTraffic == true) ||
+                (netConfig?.baseCleartextPermitted ?: (context.attackSurface.targetSdk < 28))
         if (!permitsCleartext) return emptyList()
 
         val httpLiterals = context.dexIndex.findStringLiterals { str ->
@@ -304,6 +316,43 @@ class CleartextTrafficRule : Rule {
             )
         }
 
+        return findings
+    }
+}
+
+/**
+ * APK-SEC-021: WebView SSL Error Ignored (SslErrorHandler.proceed)
+ */
+class WebViewSslBypassRule : Rule {
+    override val id = "APK-SEC-021"
+    override val name = "WebView SSL Error Bypassed (handler.proceed)"
+    override val description = "Application's WebViewClient overrides onReceivedSslError and calls handler.proceed(), ignoring TLS/SSL certificate validation errors and enabling Man-in-the-Middle attacks."
+
+    override fun analyze(context: AnalysisContext): List<Finding> {
+        val findings = mutableListOf<Finding>()
+        val proceedCalls = context.dexIndex.findCallSites("android.webkit.SslErrorHandler", "proceed")
+
+        for (cs in proceedCalls) {
+            if (cs.callerMethod == "onReceivedSslError") {
+                findings.add(
+                    Finding(
+                        id = id,
+                        title = "SSL Certificate Validation Bypassed in WebViewClient",
+                        severity = Severity.CRITICAL,
+                        confidence = Confidence.CERTAIN,
+                        cwe = "CWE-295",
+                        owasp = "M2: Insecure Communication",
+                        description = "Class '${cs.callerClass}#${cs.callerMethod}' unconditionally proceeds past SSL certificate errors by invoking SslErrorHandler.proceed(). Any attacker on the local network can intercept and manipulate WebView traffic.",
+                        remediation = "Call `handler.cancel()` in onReceivedSslError. Never call `handler.proceed()` in production code.",
+                        component = cs.callerClass,
+                        targetClass = cs.callerClass,
+                        targetMethod = cs.callerMethod,
+                        evidence = "Call to SslErrorHandler.proceed() in onReceivedSslError",
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                    )
+                )
+            }
+        }
         return findings
     }
 }

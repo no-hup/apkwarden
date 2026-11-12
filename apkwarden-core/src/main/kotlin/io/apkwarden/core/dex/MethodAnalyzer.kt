@@ -1,5 +1,6 @@
 package io.apkwarden.core.dex
 
+import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.*
@@ -32,20 +33,24 @@ class MethodAnalyzer(private val method: Method) {
     }
 
     private fun analyze() {
+        val impl = method.implementation ?: return
         if (instructions.isEmpty()) return
 
         val currentRegisters = mutableMapOf<Int, RegisterValue>()
+        seedMethodParameters(currentRegisters, impl.registerCount)
 
         for (i in instructions.indices) {
             registerStatesAtInstruction.add(currentRegisters.toMap())
             val inst = instructions[i]
 
             when (inst.opcode) {
+                // Constant integers
                 Opcode.CONST_4, Opcode.CONST_16, Opcode.CONST, Opcode.CONST_HIGH16 -> {
                     if (inst is OneRegisterInstruction && inst is NarrowLiteralInstruction) {
                         currentRegisters[inst.registerA] = RegisterValue.IntConstant(inst.narrowLiteral)
                     }
                 }
+                // Constant strings
                 Opcode.CONST_STRING, Opcode.CONST_STRING_JUMBO -> {
                     if (inst is OneRegisterInstruction && inst is ReferenceInstruction) {
                         val ref = inst.reference
@@ -54,11 +59,13 @@ class MethodAnalyzer(private val method: Method) {
                         }
                     }
                 }
+                // Move operations: register copy
                 Opcode.MOVE, Opcode.MOVE_OBJECT, Opcode.MOVE_16, Opcode.MOVE_OBJECT_16, Opcode.MOVE_FROM16, Opcode.MOVE_OBJECT_FROM16 -> {
                     if (inst is TwoRegisterInstruction) {
                         currentRegisters[inst.registerA] = currentRegisters[inst.registerB] ?: RegisterValue.Unknown
                     }
                 }
+                // Move result of an invocation
                 Opcode.MOVE_RESULT, Opcode.MOVE_RESULT_OBJECT -> {
                     if (inst is OneRegisterInstruction && i > 0) {
                         val prevInst = instructions[i - 1]
@@ -66,13 +73,54 @@ class MethodAnalyzer(private val method: Method) {
                         currentRegisters[inst.registerA] = prevTaint ?: RegisterValue.Unknown
                     }
                 }
+                // Check-cast asserts type but preserves reference and taint in registerA
+                Opcode.CHECK_CAST -> {
+                    // Intentionally do not clear registerA; keep existing value/taint
+                }
+                // Any other instruction that sets registerA: clear destination register to Unknown
                 else -> {
-                    // For instructions that overwrite register A without known value, clear it
-                    if (inst is OneRegisterInstruction && inst.opcode.canInitializeRegister()) {
-                        currentRegisters[inst.registerA] = RegisterValue.Unknown
+                    if (inst.opcode.setsRegister() || inst.opcode.setsWideRegister()) {
+                        val destReg = when (inst) {
+                            is OneRegisterInstruction -> inst.registerA
+                            is TwoRegisterInstruction -> inst.registerA
+                            is ThreeRegisterInstruction -> inst.registerA
+                            else -> null
+                        }
+                        if (destReg != null) {
+                            currentRegisters[destReg] = RegisterValue.Unknown
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private fun seedMethodParameters(currentRegisters: MutableMap<Int, RegisterValue>, totalRegs: Int) {
+        val paramTypes = method.parameterTypes.map { it.toString() }
+        val isStatic = (method.accessFlags and AccessFlags.STATIC.value) != 0
+
+        var paramRegCount = if (!isStatic) 1 else 0
+        for (pt in paramTypes) {
+            paramRegCount += if (pt == "J" || pt == "D") 2 else 1
+        }
+
+        var currentReg = totalRegs - paramRegCount
+        if (!isStatic) {
+            // Register p0 is 'this'
+            currentReg += 1
+        }
+
+        for (pt in paramTypes) {
+            val norm = ClassHierarchy.normalizeType(pt)
+            when {
+                norm == "android.content.Intent" -> {
+                    currentRegisters[currentReg] = RegisterValue.Tainted(TaintSource.INTENT_OBJECT, "method parameter")
+                }
+                norm == "android.net.Uri" -> {
+                    currentRegisters[currentReg] = RegisterValue.Tainted(TaintSource.URI_PATH_SEGMENT, "method parameter")
+                }
+            }
+            currentReg += if (pt == "J" || pt == "D") 2 else 1
         }
     }
 
@@ -89,7 +137,7 @@ class MethodAnalyzer(private val method: Method) {
                 RegisterValue.Tainted(TaintSource.INTENT_DATA, methodName)
             (defClass.contains("Activity") || defClass.contains("Context")) && methodName == "getIntent" ->
                 RegisterValue.Tainted(TaintSource.INTENT_OBJECT, methodName)
-            defClass.contains("Uri") && (methodName == "getLastPathSegment" || methodName == "getPath") ->
+            defClass.contains("Uri") && (methodName == "getLastPathSegment" || methodName == "getPath" || methodName == "getQueryParameter") ->
                 RegisterValue.Tainted(TaintSource.URI_PATH_SEGMENT, methodName)
             defClass.contains("ZipEntry") && methodName == "getName" ->
                 RegisterValue.Tainted(TaintSource.ZIP_ENTRY_NAME, methodName)
@@ -144,8 +192,25 @@ class MethodAnalyzer(private val method: Method) {
             } else false
         }
     }
-}
 
-private fun Opcode.canInitializeRegister(): Boolean {
-    return this.flags and Opcode.CAN_INITIALIZE_REFERENCE != 0
+    /**
+     * Checks whether an Intent passed to a sink was sanitized (package or component validated).
+     */
+    fun hasIntentSanitization(): Boolean {
+        return containsCallTo("android.content.Intent", "setPackage") ||
+                containsCallTo("android.content.Intent", "setComponent") ||
+                containsCallTo("android.content.Intent", "setClass") ||
+                containsCallTo("android.content.Intent", "setClassName") ||
+                containsCallTo("android.content.ComponentName", "getPackageName") ||
+                containsCallTo("android.content.Context", "getPackageName")
+    }
+
+    /**
+     * Checks whether a path derived from Uri or zip was sanitized (canonical path check or File.getName()).
+     */
+    fun hasPathSanitization(): Boolean {
+        return containsCallTo("java.io.File", "getCanonicalPath") ||
+                containsCallTo("java.io.File", "getCanonicalFile") ||
+                containsCallTo("java.io.File", "getName")
+    }
 }

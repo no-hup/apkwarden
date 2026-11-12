@@ -100,3 +100,25 @@ This document tracks all major architectural decisions, trade-offs, and design r
 * **Decision:** Cross-reference all bytecode sink detections with Milestone 1's resolved `AttackSurface`. A call to `startActivity` with an untrusted Intent is only flagged as `INTENT_REDIRECTION` (CRITICAL) if the call site is located within an exported component or reachable from an exported entry point (1–2 hop intra/inter-procedural call graph). Sinks in unexported internal components are either downgraded to `LOW`/`INFO` or suppressed entirely.
 * **Why:** Eliminates the #1 reason developers turn off or ignore security scanners: noisy, unexploitable findings in unreachable code.
 
+---
+
+## ADR 010: Milestone 2 Post-Consult Flow & Rule Precision Hardening
+* **Date:** 2026-11-12
+* **Status:** Accepted
+* **Context:** A staff-level adversarial review of the Milestone 2 rules engine identified several critical Dalvik flow and rule precision failure modes:
+  1. **Register State Clearing:** Register overwrite tracking must clear destination registers on ANY instruction modifying register A (e.g. `iget`, `sget`, `new-instance`, arithmetic) rather than relying on `CAN_INITIALIZE_REFERENCE`. `check-cast` must preserve register value/taint.
+  2. **Lifecycle Parameter Seeding:** Intent sources in components are often passed as method parameters (`onReceive(context, intent)`, `onNewIntent(intent)`, `onStartCommand(intent, ...)`). Method arguments must be seeded with taint tags on entry.
+  3. **Explicit Intent Construction:** `new Intent(Context, Class)` is standard explicit intent construction and must NOT be flagged as implicit `PendingIntent`.
+  4. **Fail-Open Hardening:** Corrupt/unparseable DEX files must record fatal scanner warnings rather than showing a false "Clean bill of health". Typos in `--fail-on` flags must throw an error rather than silently succeeding.
+  5. **False Positive Elimination in Rules:**
+     - Exclude `RSA/ECB/...` from ECB warnings (RSA block padding is standard, not ECB vulnerability).
+     - Exclude resource IDs (`0x7f...`) from `FLAG_IMMUTABLE` (0x04000000) bitmask checks.
+     - Support Kotlin `StringsKt.contains$default` / `endsWith$default` in deep link checks, and recognize leading-dot domains as safe.
+     - Ignore `registerReceiver(null, filter)` battery-probe calls.
+     - Recognize `File.getName()` as path traversal sanitization in Dirty Stream.
+     - Exclude Android package/intent strings (`android.permission.*`) from entropy secret scanner, and raise threshold to 4.5.
+     - Inspect manifest `<application android:usesCleartextTraffic="true">` for cleartext HTTP traffic.
+  6. **Add Missing Critical SSL Rule:** Added `WebViewClient.onReceivedSslError` calling `handler.proceed()`.
+* **Decision:** Implemented these engine and rule precision enhancements across `MethodAnalyzer`, `DexIndex`, and the rules suite.
+
+

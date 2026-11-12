@@ -128,6 +128,7 @@ data class AttackSurface(
     val deepLinks: List<DeepLink> = emptyList(),
     val fileProviderPaths: List<FileProviderPath> = emptyList(),
     val networkSecurityConfig: NetworkSecurityConfig? = null,
+    val usesCleartextTraffic: Boolean? = null,
     val applicationClass: String? = null
 ) {
     val exportedComponents: List<Component>

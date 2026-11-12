@@ -53,5 +53,6 @@ data class ScanReport(
     val attackSurface: AttackSurface,
     val stackFingerprint: StackFingerprint,
     val findings: List<Finding>,
-    val summary: ScanSummary
+    val summary: ScanSummary,
+    val scanWarnings: List<String> = emptyList()
 )

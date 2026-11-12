@@ -64,7 +64,8 @@ class DexIndex private constructor(
     private val callSitesByTarget: Map<String, List<CallSite>>,
     private val stringOccurrences: Map<String, List<StringOccurrence>>,
     private val fieldAccesses: Map<String, List<FieldAccess>>,
-    private val callersByMethod: Map<String, Set<String>>
+    private val callersByMethod: Map<String, Set<String>>,
+    val parsingErrors: List<String> = emptyList()
 ) {
 
     fun findCallSites(targetClass: String, targetMethod: String): List<CallSite> {
@@ -116,7 +117,7 @@ class DexIndex private constructor(
         val normCaller = ClassHierarchy.normalizeType(callerClass)
         val exportedComponents = attackSurface.components
             .filter { it.exported }
-            .map { it.name }
+            .flatMap { listOfNotNull(it.name, it.targetActivity) }
             .toSet()
 
         if (exportedComponents.contains(normCaller)) return true
@@ -155,14 +156,16 @@ class DexIndex private constructor(
             val stringOccurrences = mutableMapOf<String, MutableList<StringOccurrence>>()
             val fieldAccesses = mutableMapOf<String, MutableList<FieldAccess>>()
             val callersByMethod = mutableMapOf<String, MutableSet<String>>()
+            val parsingErrors = mutableListOf<String>()
 
-            val opcodes = Opcodes.getDefault()
+            val opcodes = Opcodes.forApi(34)
 
             for (entryName in dexEntries) {
                 val bytes = archive.getEntryBytes(entryName) ?: continue
                 val dexFile = try {
                     DexBackedDexFile(opcodes, bytes)
                 } catch (e: Exception) {
+                    parsingErrors.add("Failed to parse $entryName: ${e.message}")
                     continue
                 }
 
@@ -253,7 +256,8 @@ class DexIndex private constructor(
                 callSitesByTarget = callSitesByTarget,
                 stringOccurrences = stringOccurrences,
                 fieldAccesses = fieldAccesses,
-                callersByMethod = callersByMethod
+                callersByMethod = callersByMethod,
+                parsingErrors = parsingErrors
             )
         }
     }

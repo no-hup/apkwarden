@@ -57,6 +57,14 @@ class ScanEngine(private val rules: List<Rule> = RuleRegistry.allRules) {
         val lowCount = findings.count { it.severity == Severity.LOW }
         val infoCount = findings.count { it.severity == Severity.INFO }
 
+        // Warnings collection
+        val scanWarnings = mutableListOf<String>()
+        scanWarnings.addAll(dexIndex.parsingErrors)
+        if (fingerprint.packer.detected) {
+            scanWarnings.add("PACKER DETECTED: Commercial protector '${fingerprint.packer.packerName}' detected. Bytecode analysis has reduced visibility (${fingerprint.coverageStatement.dexCoveragePct}% coverage).")
+        }
+        scanWarnings.addAll(fingerprint.coverageStatement.blindSpots)
+
         // Security score formula: Starts at 100, penalizes by severity
         val penalty = (criticalCount * 25) + (highCount * 15) + (mediumCount * 5) + (lowCount * 2)
         val score = maxOf(0, 100 - penalty)
@@ -77,7 +85,8 @@ class ScanEngine(private val rules: List<Rule> = RuleRegistry.allRules) {
             attackSurface = surface,
             stackFingerprint = fingerprint,
             findings = findings.sortedWith(compareBy({ it.severity }, { it.id })),
-            summary = summary
+            summary = summary,
+            scanWarnings = scanWarnings
         )
     }
 }

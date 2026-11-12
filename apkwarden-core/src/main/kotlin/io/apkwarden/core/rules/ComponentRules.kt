@@ -3,6 +3,7 @@ package io.apkwarden.core.rules
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.reference.MethodReference
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
+import io.apkwarden.core.dex.ClassHierarchy
 import io.apkwarden.core.dex.MethodAnalyzer
 import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.dex.TaintSource
@@ -23,6 +24,8 @@ class IntentRedirectionRule : Rule {
         val findings = mutableListOf<Finding>()
         val startCallSites = context.dexIndex.findCallSites("android.content.Context", "startActivity") +
                 context.dexIndex.findCallSites("android.app.Activity", "startActivity") +
+                context.dexIndex.findCallSites("android.app.Activity", "startActivityForResult") +
+                context.dexIndex.findCallSites("androidx.core.content.ContextCompat", "startActivity") +
                 context.dexIndex.findCallSites("android.content.Context", "startService") +
                 context.dexIndex.findCallSites("android.content.Context", "sendBroadcast")
 
@@ -31,6 +34,9 @@ class IntentRedirectionRule : Rule {
             if (!isExported) continue
 
             val analyzer = MethodAnalyzer(cs.method)
+            // If the method verifies or sanitizes the Intent's component/package, suppress finding
+            if (analyzer.hasIntentSanitization()) continue
+
             val args = analyzer.getInvocationArgs(cs.instruction)
             // In startActivity(intent), the intent is the 2nd register for virtual calls (register 0 is this, register 1 is Intent)
             val intentReg = if (args.size >= 2) args[1] else continue
@@ -101,7 +107,7 @@ class MutablePendingIntentRule : Rule {
                     if (flags and flagMutable != 0) {
                         isVulnerable = true
                         detail = "Explicitly uses FLAG_MUTABLE (0x02000000)"
-                    } else if (flags and flagImmutable == 0 && context.attackSurface.targetSdk >= 31) {
+                    } else if (flags and flagImmutable == 0 && context.attackSurface.targetSdk >= 31 && (flags ushr 24 != 0x7f)) {
                         isVulnerable = true
                         detail = "Missing FLAG_IMMUTABLE (0x04000000) on targetSdk ${context.attackSurface.targetSdk}"
                     }
@@ -109,10 +115,10 @@ class MutablePendingIntentRule : Rule {
                 is RegisterValue.Unknown -> {
                     // If targetSdk >= 31, lack of demonstrable FLAG_IMMUTABLE is suspicious
                     if (context.attackSurface.targetSdk >= 31) {
-                        // Check if method contains any reference to 0x04000000
+                        // Check if method contains any reference to 0x04000000, excluding R.id / R.layout resource IDs
                         val hasImmutableConst = cs.method.implementation?.instructions?.any {
                             it is com.android.tools.smali.dexlib2.iface.instruction.NarrowLiteralInstruction &&
-                                    (it.narrowLiteral and flagImmutable != 0)
+                                    (it.narrowLiteral == flagImmutable || ((it.narrowLiteral and flagImmutable != 0) && (it.narrowLiteral ushr 24 != 0x7f)))
                         } ?: false
                         if (!hasImmutableConst) {
                             isVulnerable = true
@@ -167,7 +173,17 @@ class ImplicitPendingIntentRule : Rule {
             val args = analyzer.getInvocationArgs(cs.instruction)
             if (args.size < 3) continue
             // Intent is arg 2
-            val hasExplicitIntent = analyzer.containsCallTo("android.content.Intent", "setPackage") ||
+            val hasExplicitConstructor = cs.method.implementation?.instructions?.any { inst ->
+                if (inst is ReferenceInstruction) {
+                    val ref = inst.reference as? MethodReference
+                    if (ref != null && ClassHierarchy.normalizeType(ref.definingClass) == "android.content.Intent" && ref.name == "<init>") {
+                        ref.parameterTypes.any { pt -> pt.contains("Class") || pt.contains("ComponentName") }
+                    } else false
+                } else false
+            } ?: false
+
+            val hasExplicitIntent = hasExplicitConstructor ||
+                    analyzer.containsCallTo("android.content.Intent", "setPackage") ||
                     analyzer.containsCallTo("android.content.Intent", "setComponent") ||
                     analyzer.containsCallTo("android.content.Intent", "setClass") ||
                     analyzer.containsCallTo("android.content.Intent", "setClassName")
@@ -217,6 +233,13 @@ class DynamicReceiverExportRule : Rule {
             val args = analyzer.getInvocationArgs(cs.instruction)
             // Two-parameter version registerReceiver(receiver, filter) has no export flag (args.size == 3 including 'this')
             if (args.size <= 3) {
+                // If receiver argument is literal null (0), this is a sticky broadcast probe (e.g. battery status), which does not require export flags
+                if (args.size >= 2) {
+                    val receiverReg = args[1]
+                    val receiverVal = analyzer.getRegisterValue(receiverReg, cs.instructionIndex)
+                    if (receiverVal is RegisterValue.IntConstant && receiverVal.value == 0) continue
+                }
+
                 findings.add(
                     Finding(
                         id = id,
@@ -258,10 +281,17 @@ class DeepLinkHostValidationRule : Rule {
             for (method in classDef.methods) {
                 val analyzer = MethodAnalyzer(method)
                 val hasGetHost = analyzer.containsCallTo("android.net.Uri", "getHost")
-                val hasWeakContains = analyzer.containsCallTo("java.lang.String", "contains")
-                val hasWeakEndsWith = analyzer.containsCallTo("java.lang.String", "endsWith")
+                val hasWeakContains = analyzer.containsCallTo("java.lang.String", "contains") ||
+                        analyzer.containsCallTo("kotlin.text.StringsKt", "contains") ||
+                        analyzer.containsCallTo("kotlin.text.StringsKt__StringsJVMKt", "contains")
+                val hasWeakEndsWith = analyzer.containsCallTo("java.lang.String", "endsWith") ||
+                        analyzer.containsCallTo("kotlin.text.StringsKt", "endsWith") ||
+                        analyzer.containsCallTo("kotlin.text.StringsKt__StringsJVMKt", "endsWith")
 
-                if (hasGetHost && (hasWeakContains || hasWeakEndsWith)) {
+                // Check if the method uses a safe leading-dot suffix like ".example.com"
+                val hasSafeDotPrefix = analyzer.containsStringLiteral { it.startsWith(".") && it.length > 2 }
+
+                if (hasGetHost && (hasWeakContains || (hasWeakEndsWith && !hasSafeDotPrefix))) {
                     findings.add(
                         Finding(
                             id = id,
@@ -270,12 +300,12 @@ class DeepLinkHostValidationRule : Rule {
                             confidence = Confidence.FIRM,
                             cwe = "CWE-20",
                             owasp = "M4: Insufficient Input/Output Validation",
-                            description = "Deep link handler in '$activityName#${method.name}' inspects Uri host using contains() or endsWith(). Attackers can bypass this check using domains like 'attacker-example.com' or 'example.com.attacker.org'.",
+                            description = "Deep link handler in '$activityName#${method.name}' inspects Uri host using contains() or unanchored endsWith(). Attackers can bypass this check using domains like 'attacker-example.com' or 'example.com.attacker.org'.",
                             remediation = "Validate deep link host against an exact whitelist or require a leading dot: `val host = uri.host ?: return; if (host == \"example.com\" || host.endsWith(\".example.com\")) { ... }`",
                             component = activityName,
                             targetClass = activityName,
                             targetMethod = method.name,
-                            evidence = "Method calls Uri.getHost() and String.${if (hasWeakContains) "contains" else "endsWith"}",
+                            evidence = "Method calls Uri.getHost() and weak substring matching (${if (hasWeakContains) "contains" else "endsWith"})",
                             lineOrOffset = null
                         )
                     )

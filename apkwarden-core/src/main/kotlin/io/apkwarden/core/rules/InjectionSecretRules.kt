@@ -109,7 +109,7 @@ class HardcodedSecretsRule : Rule {
             if (!seenTokens.contains(literal) && literal.length in 28..80) {
                 if (isPotentialGenericSecret(literal)) {
                     val entropy = calculateShannonEntropy(literal)
-                    if (entropy > 3.8) {
+                    if (entropy > 4.5) {
                         seenTokens.add(literal)
                         val masked = maskSecret(literal)
                         findings.add(
@@ -138,7 +138,9 @@ class HardcodedSecretsRule : Rule {
     }
 
     private fun isPotentialGenericSecret(s: String): Boolean {
-        // Exclude common false positives: URLs, package names, file paths, UUIDs, XML namespaces
+        // Exclude common false positives: URLs, package names, permissions, intents, file paths, UUIDs
+        if (s.startsWith("android.permission.") || s.startsWith("android.intent.") || s.startsWith("com.android.")) return false
+        if (s.startsWith("androidx.") || s.startsWith("kotlin.") || s.startsWith("java.")) return false
         if (s.contains("http://") || s.contains("https://") || s.contains('/') || s.contains('\\')) return false
         if (s.contains(".com") || s.contains(".org") || s.contains(".java") || s.contains(".kt")) return false
         if (s.matches(Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"""))) return false // UUID

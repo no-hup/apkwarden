@@ -223,9 +223,19 @@ class ScanCommand : CliktCommand(name = "scan") {
             echo("Findings:        CRITICAL: ${summary.criticalCount} | HIGH: ${summary.highCount} | MEDIUM: ${summary.mediumCount} | LOW: ${summary.lowCount} | INFO: ${summary.infoCount}")
             echo("──────────────────────────────────────────────────────────────────────")
 
+            if (report.scanWarnings.isNotEmpty()) {
+                echo("")
+                echo("=== ⚠️  SCAN WARNINGS & BLIND SPOTS ===")
+                report.scanWarnings.forEach { echo("• $it") }
+            }
+
             if (report.findings.isEmpty()) {
                 echo("")
-                echo("✓ Clean bill of health: Zero vulnerabilities found across all 20 rules!")
+                if (report.scanWarnings.any { it.contains("PACKER") || it.contains("Failed to parse") }) {
+                    echo("⚠️  No static findings detected in available DEX bytecode, but note scan warnings/blind spots above.")
+                } else {
+                    echo("✓ Clean bill of health: Zero vulnerabilities found across all rules!")
+                }
             } else {
                 var currentSeverity: Severity? = null
                 for (finding in report.findings) {
@@ -267,7 +277,8 @@ class ScanCommand : CliktCommand(name = "scan") {
             "HIGH" -> Severity.HIGH
             "MEDIUM" -> Severity.MEDIUM
             "LOW" -> Severity.LOW
-            else -> null
+            "NEVER" -> null
+            else -> throw com.github.ajalt.clikt.core.UsageError("Unknown --fail-on severity '$failOn'. Valid choices: CRITICAL, HIGH, MEDIUM, LOW, NEVER")
         }
 
         if (failSeverity != null) {

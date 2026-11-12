@@ -46,6 +46,7 @@ class AttackSurfaceResolver(
         val isTestOnly = appNode?.findAttribute("testOnly")?.booleanValue ?: false
         val allowBackup = appNode?.findAttribute("allowBackup")?.booleanValue ?: true
         val dataExtractionRulesDefined = appNode?.findAttribute("dataExtractionRules") != null
+        val usesCleartextTraffic = appNode?.findAttribute("usesCleartextTraffic")?.booleanValue
         val applicationClass = resolveClassName(appNode?.findAttribute("name", AndroidResIds.ATTR_NAME)?.value, packageName)
         val appPermission = appNode?.findAttribute("permission", AndroidResIds.ATTR_PERMISSION)?.value?.let { sanitizeText(it) }
 
@@ -110,6 +111,7 @@ class AttackSurfaceResolver(
             deepLinks = deepLinks,
             fileProviderPaths = fileProviderPaths,
             networkSecurityConfig = networkSecurityConfig,
+            usesCleartextTraffic = usesCleartextTraffic,
             applicationClass = applicationClass
         )
     }
