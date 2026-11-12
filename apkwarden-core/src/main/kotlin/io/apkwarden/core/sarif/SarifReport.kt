@@ -1,5 +1,6 @@
 package io.apkwarden.core.sarif
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -12,7 +13,13 @@ data class SarifReport(
 @Serializable
 data class SarifRun(
     val tool: SarifTool,
-    val results: List<SarifResult>
+    val results: List<SarifResult>,
+    val invocations: List<SarifInvocation> = emptyList()
+)
+
+@Serializable
+data class SarifInvocation(
+    val executionSuccessful: Boolean = true
 )
 
 @Serializable
@@ -42,7 +49,9 @@ data class SarifRule(
 @Serializable
 data class SarifRuleProperties(
     val tags: List<String> = emptyList(),
-    val precision: String = "high"
+    val precision: String = "high",
+    @SerialName("security-severity")
+    val securitySeverity: String? = null
 )
 
 @Serializable
@@ -62,11 +71,20 @@ data class SarifText(
 )
 
 @Serializable
+data class SarifSuppression(
+    val kind: String = "external",
+    val status: String = "accepted",
+    val justification: String? = null
+)
+
+@Serializable
 data class SarifResult(
     val ruleId: String,
     val level: String, // "error", "warning", "note"
     val message: SarifText,
     val locations: List<SarifLocation> = emptyList(),
+    val partialFingerprints: Map<String, String> = emptyMap(),
+    val suppressions: List<SarifSuppression> = emptyList(),
     val properties: Map<String, String> = emptyMap()
 )
 

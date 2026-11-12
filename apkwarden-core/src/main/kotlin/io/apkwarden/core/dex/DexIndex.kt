@@ -113,7 +113,7 @@ class DexIndex private constructor(
     fun checkReachability(
         callerClass: String,
         attackSurface: AttackSurface,
-        maxHops: Int = 3
+        maxHops: Int = 6
     ): Reachability {
         val normCaller = ClassHierarchy.normalizeType(callerClass)
         val exportedComponents = attackSurface.components
@@ -122,6 +122,12 @@ class DexIndex private constructor(
             .toSet()
 
         if (exportedComponents.contains(normCaller)) return Reachability.DIRECT
+
+        // If caller is an inner class, anonymous class, or synthetic lambda of an exported component
+        val outerClass = normCaller.substringBefore('$')
+        if (outerClass != normCaller && exportedComponents.contains(outerClass)) {
+            return Reachability.DIRECT
+        }
 
         // Check 1..maxHops in call graph
         var currentCallers = setOf(normCaller)
@@ -132,7 +138,10 @@ class DexIndex private constructor(
             for (curr in currentCallers) {
                 val directCallers = callersByMethod[curr] ?: emptySet()
                 for (caller in directCallers) {
-                    if (exportedComponents.contains(caller)) return Reachability.REACHABLE
+                    val callerOuter = caller.substringBefore('$')
+                    if (exportedComponents.contains(caller) || exportedComponents.contains(callerOuter)) {
+                        return Reachability.REACHABLE
+                    }
                     if (visited.add(caller)) {
                         nextCallers.add(caller)
                     }

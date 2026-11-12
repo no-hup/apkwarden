@@ -150,6 +150,23 @@ This document tracks all major architectural decisions, trade-offs, and design r
   3. **Baseline Suppression (`--baseline <file>` / `--generate-baseline <file>`):** Enables engineering teams to record existing legacy vulnerabilities into `.apkwarden-baseline.json`. Findings matching the baseline are marked `(SUPPRESSED)` and bypassed during `--fail-on` threshold evaluation, allowing teams to enforce strict zero-vulnerability gating on new code without failing builds on grandfathered tech debt.
   4. **Contextual Dalvik Disassembly Snippets:** Instead of requiring full-app decompilation or leaving developers guessing, `MethodAnalyzer` generates 5-line Dalvik bytecode snippets surrounding flagged call sites with an arrow pointer (`>`) at the sink instruction. Displayed directly in CLI output and embedded in SARIF report snippets.
 
+---
+
+## ADR 013: Milestone 3 Post-Consult Staff Refinements & CI Hardening
+* **Date:** 2026-11-13
+* **Status:** Accepted
+* **Context:** A staff-level adversarial review of the Milestone 3 SARIF, Diff, and reachability engine identified critical real-world CI integration edge cases:
+  1. **GitHub Code Scanning Severity Contract:** GitHub Code Scanning ignores SARIF `level: "error"` when classifying alert severity. It strictly requires `@SerialName("security-severity")` on `SarifRuleProperties` formatted as a decimal string ("9.0" Critical, "8.0" High, "5.0" Medium, "2.0" Low). Without this, GitHub displays all alerts with default badges regardless of rule criticality.
+  2. **Alert Fingerprint Stability (`partialFingerprints`):** In CI static analysis, line numbers shift between commits as code changes, causing GitHub Code Scanning to close existing alerts and reopen duplicate ones. Added `logicalFingerprint/v1` computed from `ruleId:targetClass:targetMethod` hash, ensuring alerts stay stable across refactors.
+  3. **Native SARIF Suppressions:** Rather than filtering suppressed findings completely out of the SARIF report, APKwarden includes them with native SARIF `suppressions` objects (`kind: "external"`, `status: "accepted"`, `justification: "Grandfathered baseline suppression"`). This allows GitHub Code Scanning to track baseline debt visibly without failing check runs.
+  4. **Snippet Secret Redaction:** Disassembly snippets for hardcoded credential rules (`APK-SEC-012`, `APK-SEC-013`) could expose real secrets in plain text inside CI build logs and SARIF artifacts. Snippet generation now masks sensitive literal values with `[REDACTED_SECRET]`.
+  5. **Outer Class Lambda Reachability:** Kotlin compiles lambdas and coroutines into separate inner classes (e.g. `MainActivity$onCreate$1`). A pure class-equality check fails to associate the lambda with its enclosing component. `DexIndex.checkReachability()` now resolves inner classes by stripping the `$` suffix to test the enclosing class against the attack surface.
+  6. **PR Lockfile Self-Approval Prevention (`--git-ref`):** If CI diffs against the local `surface.lock.json` in the PR checkout, a developer can inadvertently commit a new lockfile that auto-approves their own breaking changes. The `--git-ref <ref>` option allows CI workflows to run `git show origin/main:surface.lock.json` to guarantee comparison against the protected base branch.
+  7. **Fatal Bytecode CI Gating:** If DEX parsing fails due to corrupt bytecode or undetected packers, `--fail-on` gates will fail the CI run with exit code 2 if any `Failed to parse` scan warning is logged, preventing silent fail-open passes.
+  8. **Dangerous Permission Expansion:** Expanded `dangerousPermissions` set in `SurfaceDiffEngine` to include modern scoped storage and system alert permissions (`MANAGE_EXTERNAL_STORAGE`, `QUERY_ALL_PACKAGES`, `SYSTEM_ALERT_WINDOW`, `WRITE_SETTINGS`, `REQUEST_INSTALL_PACKAGES`, `ACCESS_BACKGROUND_LOCATION`, etc.).
+* **Decision:** Implemented these refinements into `SarifSerializer`, `SarifReport`, `MethodAnalyzer`, `DexIndex`, `SurfaceDiffEngine`, and `Main.kt`.
+
+
 
 
 

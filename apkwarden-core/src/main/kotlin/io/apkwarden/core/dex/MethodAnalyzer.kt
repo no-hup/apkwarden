@@ -230,7 +230,13 @@ class MethodAnalyzer(private val method: Method) {
             val refStr = if (inst is ReferenceInstruction) {
                 when (val ref = inst.reference) {
                     is MethodReference -> " ${ref.definingClass}->${ref.name}"
-                    is StringReference -> " \"${ref.string}\""
+                    is StringReference -> {
+                        val raw = ref.string
+                        val display = if ((raw.startsWith("AKIA") || raw.startsWith("AIza") || raw.startsWith("xox")) && raw.length > 8) {
+                            "${raw.take(4)}...${raw.takeLast(4)}"
+                        } else raw
+                        " \"$display\""
+                    }
                     is com.android.tools.smali.dexlib2.iface.reference.FieldReference -> " ${ref.definingClass}->${ref.name}:${ref.type}"
                     is com.android.tools.smali.dexlib2.iface.reference.TypeReference -> " ${ref.type}"
                     else -> ""

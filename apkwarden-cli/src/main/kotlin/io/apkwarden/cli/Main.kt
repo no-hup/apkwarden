@@ -198,6 +198,7 @@ class DiffCommand : CliktCommand(name = "diff") {
 
     private val headTarget by argument("head", help = "Path to new APK, AAB, or surface.lock.json").file(mustExist = true)
     private val baseTarget by option("-b", "--baseline", help = "Path to baseline surface.lock.json (default: surface.lock.json in current directory)").file(mustExist = true)
+    private val gitRef by option("--git-ref", help = "Git reference to baseline lockfile from base branch (e.g. origin/main:surface.lock.json)")
     private val jsonOutput by option("--json", help = "Output diff as JSON").flag(default = false)
     private val failOnBreaking by option(
         "--fail-on-breaking",
@@ -207,15 +208,32 @@ class DiffCommand : CliktCommand(name = "diff") {
     private val json = Json { prettyPrint = true }
 
     override fun run() {
-        val baseLockFile = baseTarget ?: File("surface.lock.json")
-        if (!baseLockFile.exists()) {
-            throw com.github.ajalt.clikt.core.UsageError("Baseline lockfile '${baseLockFile.path}' not found. Run 'apkwarden lock' to generate one, or specify with -b/--baseline.")
-        }
-
-        val baseLock = try {
-            SurfaceLockGenerator.deserialize(baseLockFile.readText())
-        } catch (e: Exception) {
-            throw com.github.ajalt.clikt.core.UsageError("Failed to parse baseline lockfile '${baseLockFile.path}': ${e.message}")
+        val baseLock = when {
+            gitRef != null -> {
+                try {
+                    val proc = ProcessBuilder("git", "show", gitRef!!).start()
+                    val text = proc.inputStream.bufferedReader().readText()
+                    val exit = proc.waitFor()
+                    if (exit != 0) {
+                        val err = proc.errorStream.bufferedReader().readText()
+                        throw com.github.ajalt.clikt.core.UsageError("Failed to read git ref '$gitRef': $err")
+                    }
+                    SurfaceLockGenerator.deserialize(text)
+                } catch (e: Exception) {
+                    throw com.github.ajalt.clikt.core.UsageError("Failed to parse lockfile from git ref '$gitRef': ${e.message}")
+                }
+            }
+            else -> {
+                val baseLockFile = baseTarget ?: File("surface.lock.json")
+                if (!baseLockFile.exists()) {
+                    throw com.github.ajalt.clikt.core.UsageError("Baseline lockfile '${baseLockFile.path}' not found. Run 'apkwarden lock' to generate one, or specify with -b/--baseline or --git-ref.")
+                }
+                try {
+                    SurfaceLockGenerator.deserialize(baseLockFile.readText())
+                } catch (e: Exception) {
+                    throw com.github.ajalt.clikt.core.UsageError("Failed to parse baseline lockfile '${baseLockFile.path}': ${e.message}")
+                }
+            }
         }
 
         val headLock = if (headTarget.name.endsWith(".json")) {
@@ -421,6 +439,12 @@ class ScanCommand : CliktCommand(name = "scan") {
         }
 
         if (failSeverity != null) {
+            if (report.scanWarnings.any { it.contains("Failed to parse") }) {
+                if (!jsonOutput) {
+                    echo("❌ CI GATE FAILED: Fatal bytecode parsing error detected in APK. Static coverage is compromised.")
+                }
+                throw ProgramResult(2)
+            }
             val thresholdOrdinal = failSeverity.ordinal
             val violations = report.findings.filter { !it.isSuppressed && it.severity.ordinal <= thresholdOrdinal }
             if (violations.isNotEmpty()) {

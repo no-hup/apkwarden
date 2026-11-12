@@ -72,6 +72,8 @@ class SarifSerializerTest {
         assertThat(sarifJson).contains("\"name\": \"APKWarden\"")
         assertThat(sarifJson).contains("\"ruleId\": \"APK-SEC-001\"")
         assertThat(sarifJson).contains("\"level\": \"error\"")
+        assertThat(sarifJson).contains("\"security-severity\": \"9.0\"")
+        assertThat(sarifJson).contains("\"logicalFingerprint/v1\"")
         assertThat(sarifJson).contains("\"uri\": \"com/example/MainActivity.smali\"")
         assertThat(sarifJson).contains("> 0005: invoke-virtual Landroid/app/Activity;->startActivity")
 
@@ -79,6 +81,8 @@ class SarifSerializerTest {
         assertThat(sarifReport.runs).hasSize(1)
         val run = sarifReport.runs.first()
         assertThat(run.results).hasSize(1)
+        assertThat(run.invocations).isNotEmpty
+        assertThat(run.invocations.first().executionSuccessful).isTrue()
         assertThat(run.tool.driver.rules).isNotEmpty
     }
 }

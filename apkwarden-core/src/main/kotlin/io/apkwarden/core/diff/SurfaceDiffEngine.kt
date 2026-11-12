@@ -41,7 +41,13 @@ object SurfaceDiffEngine {
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WRITE_SETTINGS",
         "android.permission.PACKAGE_USAGE_STATS",
-        "android.permission.REQUEST_INSTALL_PACKAGES"
+        "android.permission.REQUEST_INSTALL_PACKAGES",
+        "android.permission.MANAGE_EXTERNAL_STORAGE",
+        "android.permission.QUERY_ALL_PACKAGES",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO"
     )
 
     fun diff(base: SurfaceLock, head: SurfaceLock): SurfaceDiffResult {
@@ -107,6 +113,30 @@ object SurfaceDiffEngine {
                             severity = DiffSeverity.BREAKING,
                             message = "Permission guard removed from [${headComp.type}] ${headComp.name}",
                             detail = "Previously required: ${baseComp.permission}"
+                        )
+                    )
+                }
+
+                // Check if per-component deep links added to an existing exported component
+                val newCompDeepLinks = (headComp.deepLinks.toSet() - baseComp.deepLinks.toSet()).sorted()
+                for (dl in newCompDeepLinks) {
+                    diffItems.add(
+                        DiffItem(
+                            category = "COMPONENT",
+                            severity = DiffSeverity.WARNING,
+                            message = "New deep link added to exported [${headComp.type}] ${headComp.name}: $dl"
+                        )
+                    )
+                }
+
+                // Check if provider authorities added to existing provider
+                val newAuthorities = (headComp.authorities.toSet() - baseComp.authorities.toSet()).sorted()
+                for (auth in newAuthorities) {
+                    diffItems.add(
+                        DiffItem(
+                            category = "COMPONENT",
+                            severity = DiffSeverity.BREAKING,
+                            message = "New authority added to exported provider [${headComp.name}]: $auth"
                         )
                     )
                 }
