@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# APKwarden Local Runner
+# Fast, reachability-first Android security analyzer.
+#
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$DIR/apkwarden-cli/build/install/apkwarden/bin/apkwarden"
+
+if [ ! -f "$BIN" ]; then
+    echo "⚡ Building APKwarden..." >&2
+    "$DIR/gradlew" -p "$DIR" :apkwarden-cli:installDist -q
+fi
+
+exec "$BIN" "$@"

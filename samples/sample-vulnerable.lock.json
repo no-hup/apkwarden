@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "packageName": "com.example.vulnerable",
+  "minSdk": 24,
+  "targetSdk": 33,
+  "requestedPermissions": [],
+  "declaredPermissions": [],
+  "exportedComponents": [
+    {
+      "type": "ACTIVITY",
+      "name": "com.example.vulnerable.DeepLinkActivity",
+      "exported": true,
+      "permission": null,
+      "readPermission": null,
+      "writePermission": null,
+      "authorities": [],
+      "deepLinks": [
+        "https://pay.example.com/checkout",
+        "vulnerable://pay.example.com/checkout"
+      ]
+    }
+  ],
+  "deepLinks": [
+    "https://pay.example.com/checkout",
+    "vulnerable://pay.example.com/checkout"
+  ],
+  "nativeLibraries": [
+    "libcrypto_native.so (arm64-v8a)"
+  ],
+  "networkSecurity": null,
+  "sha256Fingerprint": "e4a5bf852e852aaa5714934bfb383588578890b70bcbc562d73e9c6e4c19bc75"
+}

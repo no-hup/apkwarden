@@ -166,6 +166,27 @@ This document tracks all major architectural decisions, trade-offs, and design r
   8. **Dangerous Permission Expansion:** Expanded `dangerousPermissions` set in `SurfaceDiffEngine` to include modern scoped storage and system alert permissions (`MANAGE_EXTERNAL_STORAGE`, `QUERY_ALL_PACKAGES`, `SYSTEM_ALERT_WINDOW`, `WRITE_SETTINGS`, `REQUEST_INSTALL_PACKAGES`, `ACCESS_BACKGROUND_LOCATION`, etc.).
 * **Decision:** Implemented these refinements into `SarifSerializer`, `SarifReport`, `MethodAnalyzer`, `DexIndex`, `SurfaceDiffEngine`, and `Main.kt`.
 
+---
+
+## ADR 014: Milestone 4 — Packaging, Distribution, GitHub Action, and Public Launch
+* **Date:** 2026-11-13
+* **Status:** Accepted
+* **Context:** The engine is feature-complete with 21 AppSec rules, attack surface diffing, and SARIF export. To drive widespread adoption across developers and AppSec engineers, APKwarden requires zero-friction local installation, container execution, and first-class CI/CD pipeline automation.
+* **Decision:**
+  1. **Dual Packaging Strategy (Fat JAR + Tarball Distribution):**
+     - Configured Gradle `fatJar` task creating `apkwarden-all.jar` (~10MB self-contained executable). Runs on any system with Java 17+ without extracting or setting up classpath.
+     - Configured `application` plugin (`distTar`, `distZip`, `installDist`) providing native UNIX shell and Windows batch launchers (`bin/apkwarden`).
+  2. **Universal Local Runner (`bin/apkwarden`):** Root launcher script providing instant out-of-the-box CLI execution from git clones with automatic incremental compilation fallback.
+  3. **Composite GitHub Action (`action.yml` & `scripts/run-action.sh`):**
+     - First-class GitHub Action that runs `scan`, `diff`, `surface`, or `lock`.
+     - Supports automated SARIF 2.1.0 upload to GitHub Code Scanning via `github/codeql-action/upload-sarif@v3`.
+     - Automatically renders rich visual step summaries to `$GITHUB_STEP_SUMMARY` with vulnerability scoreboards, collapsible high-severity cards, and Dalvik disassembly snippets.
+     - Automatically falls back to downloading pre-built fat JAR from GitHub Releases.
+  4. **Homebrew Formula (`Formula/apkwarden.rb`):** Packaged for Homebrew taps (`brew install apkwarden`), configuring `Language::Java.overridable_java_home_env` to automatically bind Java 17+.
+  5. **Secure Multi-Arch Docker Container (`Dockerfile`):** Multi-stage build on `eclipse-temurin:17-jre-alpine` running as non-root user `apkwarden` (UID 10001) with multi-arch support (`linux/amd64`, `linux/arm64`).
+  6. **Automated CI/CD Workflows:** `.github/workflows/ci.yml` (multi-OS build, unit tests, CLI smoke tests, and SARIF verification) and `.github/workflows/release.yml` (GitHub Release publishing with checksums and GHCR container push).
+
+
 
 
 

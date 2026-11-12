@@ -19,9 +19,27 @@ dependencies {
 }
 
 tasks.named<Jar>("jar") {
+    archiveBaseName.set("apkwarden")
     manifest {
         attributes["Main-Class"] = "io.apkwarden.cli.MainKt"
     }
+}
+
+tasks.register<Jar>("fatJar") {
+    archiveBaseName.set("apkwarden")
+    archiveClassifier.set("all")
+    manifest {
+        attributes["Main-Class"] = "io.apkwarden.cli.MainKt"
+    }
+    from(sourceSets.main.get().output)
+    from(configurations.runtimeClasspath.map { config ->
+        config.filter { it.name.endsWith("jar") }.map { zipTree(it) }
+    })
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+tasks.named("assemble") {
+    dependsOn("fatJar")
 }
 
 tasks.named<JavaExec>("run") {

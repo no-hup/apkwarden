@@ -1,0 +1,78 @@
+name: 'APKWarden Android Security Scanner'
+description: 'Fast, reachability-first Android security analyzer. Zero cloud uploads, zero decompilation noise, PR attack surface diffing, and SARIF 2.1.0 reporting.'
+author: 'APKWarden Contributors'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  target:
+    description: 'Path to APK, AAB, split APK set, or surface.lock.json to analyze.'
+    required: true
+  command:
+    description: 'Command to run: "scan" (default), "diff", "surface", or "lock".'
+    required: false
+    default: 'scan'
+  sarif-file:
+    description: 'Path where SARIF 2.1.0 report should be written (for scan command).'
+    required: false
+    default: 'apkwarden-results.sarif'
+  baseline-file:
+    description: 'Path to .apkwarden-baseline.json to suppress grandfathered technical debt.'
+    required: false
+    default: ''
+  lockfile:
+    description: 'Baseline surface.lock.json path for diff command, or output path for lock command.'
+    required: false
+    default: ''
+  git-ref:
+    description: 'Git reference to baseline lockfile from base branch (e.g. origin/main:surface.lock.json) for diff command.'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Failure threshold for scan command (CRITICAL, HIGH, MEDIUM, LOW, or NEVER).'
+    required: false
+    default: 'HIGH'
+  fail-on-breaking:
+    description: 'Whether diff command should fail the build if breaking attack surface additions are detected.'
+    required: false
+    default: 'true'
+  upload-sarif:
+    description: 'Whether to upload SARIF report to GitHub Code Scanning.'
+    required: false
+    default: 'true'
+  sarif-category:
+    description: 'Category name for SARIF upload (default: apkwarden).'
+    required: false
+    default: 'apkwarden'
+  version:
+    description: 'Version of APKwarden to run (or "local" to build from checked out source).'
+    required: false
+    default: 'v0.1.0'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run APKwarden
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+        INPUT_BASELINE_FILE: ${{ inputs.baseline-file }}
+        INPUT_LOCKFILE: ${{ inputs.lockfile }}
+        INPUT_GIT_REF: ${{ inputs.git-ref }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        "${{ github.action_path }}/scripts/run-action.sh"
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: inputs.upload-sarif == 'true' && inputs.command == 'scan' && always()
+      uses: github/codeql-action/upload-sarif@v3
+      continue-on-error: true
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: ${{ inputs.sarif-category }}

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Run Unit Tests
+        run: ./gradlew check
+
+      - name: Build Fat JAR & Distributions
+        run: ./gradlew assemble
+
+      - name: Verify CLI Binary Execution
+        run: |
+          ./bin/apkwarden --help
+          ./bin/apkwarden surface samples/sample-vulnerable.apk
+          ./bin/apkwarden lock samples/sample-vulnerable.apk -o test-lock.json
+          ./bin/apkwarden diff test-lock.json -b samples/sample-vulnerable.lock.json
+          ./bin/apkwarden scan samples/sample-vulnerable.apk --sarif results.sarif --fail-on NEVER
+
+      - name: Verify SARIF Output
+        run: |
+          test -f results.sarif
+          grep -q "APKWarden" results.sarif
+          grep -q "security-severity" results.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: matrix.os == 'ubuntu-latest' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: results.sarif
+          category: apkwarden-ci

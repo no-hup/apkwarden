@@ -14,9 +14,12 @@ import io.apkwarden.core.ApkAnalyzer
 import io.apkwarden.core.baseline.BaselineEngine
 import io.apkwarden.core.diff.DiffSeverity
 import io.apkwarden.core.diff.SurfaceDiffEngine
+import io.apkwarden.core.diff.SurfaceDiffResult
 import io.apkwarden.core.lock.SurfaceLockGenerator
 import io.apkwarden.core.model.Reachability
+import io.apkwarden.core.model.ScanReport
 import io.apkwarden.core.model.Severity
+import io.apkwarden.core.model.SurfaceLock
 import io.apkwarden.core.sarif.SarifSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -278,6 +281,9 @@ class DiffCommand : CliktCommand(name = "diff") {
             echo("══════════════════════════════════════════════════════════════════════")
         }
 
+        // Write GitHub Action Step Summary if running in GitHub Actions
+        writeGitHubDiffSummary(baseLock, headLock, diffResult)
+
         if (failOnBreaking && diffResult.hasBreakingChanges) {
             if (!jsonOutput) {
                 echo("❌ ATTACK SURFACE CHECK FAILED: Found ${diffResult.breakingCount} breaking attack surface change(s).")
@@ -428,6 +434,9 @@ class ScanCommand : CliktCommand(name = "scan") {
             echo("══════════════════════════════════════════════════════════════════════")
         }
 
+        // Write GitHub Action Step Summary if running in GitHub Actions
+        writeGitHubScanSummary(target, report)
+
         // CI Gating evaluation
         val failSeverity = when (failOn.uppercase()) {
             "CRITICAL" -> Severity.CRITICAL
@@ -455,6 +464,102 @@ class ScanCommand : CliktCommand(name = "scan") {
             }
         }
     }
+}
+
+private fun writeGitHubSummary(markdown: String) {
+    val summaryPath = System.getenv("GITHUB_STEP_SUMMARY") ?: return
+    try {
+        File(summaryPath).appendText(markdown + "\n\n")
+    } catch (_: Exception) {
+        // Silently ignore if cannot write summary
+    }
+}
+
+private fun writeGitHubDiffSummary(
+    baseLock: SurfaceLock,
+    headLock: SurfaceLock,
+    diffResult: SurfaceDiffResult
+) {
+    val sb = StringBuilder()
+    sb.appendLine("## 🔍 APKwarden Attack Surface Diff")
+    sb.appendLine()
+    sb.appendLine("| Metric | Baseline | Head |")
+    sb.appendLine("| :--- | :--- | :--- |")
+    sb.appendLine("| **Package** | `${baseLock.packageName}` | `${headLock.packageName}` |")
+    sb.appendLine("| **Target SDK** | `${baseLock.targetSdk}` | `${headLock.targetSdk}` |")
+    sb.appendLine("| **Total Changes** | `${diffResult.totalChanges}` | 🚨 ${diffResult.breakingCount} Breaking \\| ⚠️ ${diffResult.warningCount} Warning \\| ℹ️ ${diffResult.infoCount} Info |")
+    sb.appendLine()
+
+    if (diffResult.totalChanges == 0) {
+        sb.appendLine("> ✅ **Zero Drift:** Attack surface matches baseline perfectly.")
+    } else {
+        sb.appendLine("### Attack Surface Changes")
+        sb.appendLine()
+        for (item in diffResult.diffItems) {
+            val badge = when (item.severity) {
+                DiffSeverity.BREAKING -> "🚨 **BREAKING**"
+                DiffSeverity.WARNING -> "⚠️ **WARNING**"
+                DiffSeverity.INFO -> "ℹ️ **INFO**"
+            }
+            sb.appendLine("- $badge `[${item.category}]` ${item.message}")
+            if (item.detail != null) {
+                sb.appendLine("  > ${item.detail}")
+            }
+        }
+    }
+    writeGitHubSummary(sb.toString())
+}
+
+private fun writeGitHubScanSummary(
+    apkTarget: File,
+    report: ScanReport
+) {
+    val activeFindings = report.findings.filter { !it.isSuppressed }
+    val crit = activeFindings.count { it.severity == Severity.CRITICAL }
+    val high = activeFindings.count { it.severity == Severity.HIGH }
+    val med = activeFindings.count { it.severity == Severity.MEDIUM }
+    val low = activeFindings.count { it.severity == Severity.LOW }
+
+    val sb = StringBuilder()
+    sb.appendLine("## 🛡️ APKwarden Security Report")
+    sb.appendLine()
+    sb.appendLine("| Target | Package | Target SDK | Security Score | Active Findings |")
+    sb.appendLine("| :--- | :--- | :--- | :--- | :--- |")
+    sb.appendLine("| `${apkTarget.name}` | `${report.attackSurface.packageName}` | `${report.attackSurface.targetSdk}` | **${report.summary.securityScore} / 100** | 🔴 $crit Critical \\| 🟠 $high High \\| 🟡 $med Med \\| 🔵 $low Low |")
+    sb.appendLine()
+
+    val topFindings = activeFindings.filter { it.severity == Severity.CRITICAL || it.severity == Severity.HIGH }
+    if (topFindings.isNotEmpty()) {
+        sb.appendLine("### 🚨 High & Critical Vulnerabilities")
+        sb.appendLine()
+        for (f in topFindings) {
+            val badge = if (f.severity == Severity.CRITICAL) "🔴 [CRITICAL]" else "🟠 [HIGH]"
+            sb.appendLine("<details open>")
+            sb.appendLine("<summary><b>$badge [${f.id}] ${f.title}</b></summary>")
+            sb.appendLine()
+            sb.appendLine("- **Component:** `${f.component ?: "N/A"}`")
+            sb.appendLine("- **Method:** `${f.targetClass ?: ""}#${f.targetMethod ?: ""}`")
+            sb.appendLine("- **Reachability:** `${f.reachability}` | **CWE:** ${f.cwe} | **OWASP:** ${f.owasp}")
+            if (f.evidence != null) {
+                sb.appendLine("- **Evidence:** `${f.evidence}`")
+            }
+            if (f.codeSnippet != null) {
+                sb.appendLine()
+                sb.appendLine("```smali")
+                sb.appendLine(f.codeSnippet)
+                sb.appendLine("```")
+            }
+            sb.appendLine()
+            sb.appendLine("**Description:** ${f.description}")
+            sb.appendLine()
+            sb.appendLine("**Remediation:** ${f.remediation}")
+            sb.appendLine("</details>")
+            sb.appendLine()
+        }
+    } else if (activeFindings.isEmpty()) {
+        sb.appendLine("> ✅ **Clean Bill of Health:** Zero active security vulnerabilities identified.")
+    }
+    writeGitHubSummary(sb.toString())
 }
 
 fun main(args: Array<String>) = ApkwardenCli()
