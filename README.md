@@ -1,4 +1,4 @@
-# APKwarden 🛡️
+# APKwarden 🛡️ — Fast, Local Android APK/AAB Security Scanner & PR Diff Gate
 
 [![CI](https://github.com/shaurya/apkwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/shaurya/apkwarden/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -6,23 +6,28 @@
 [![JDK](https://img.shields.io/badge/JDK-17%2B-orange.svg)](https://adoptium.net)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#installation)
 
-> **Fast, reachability-first Android security analyzer.**  
-> Zero cloud uploads, zero decompilation noise, PR attack surface diffing, and native SARIF 2.1.0 reporting.
+> **Scan an Android APK or App Bundle for security vulnerabilities locally in under 60 seconds.**  
+> Fast, reachability-first PR security gate: zero cloud uploads, zero decompilation noise, attack surface lockfile diffing, and native SARIF 2.1.0 reporting for GitHub Code Scanning.
+
+### Try it in 5 seconds (Zero Setup):
+```bash
+git clone https://github.com/shaurya/apkwarden.git && cd apkwarden
+./bin/apkwarden scan samples/sample-vulnerable.apk
+```
 
 ---
 
-## ⚡ Why APKwarden?
+## ⚡ The Tool Comparison
 
-Traditional Android static security scanners (e.g. MobSF, whole-app JADX decompilers + Semgrep) were built for manual audits, not modern high-velocity CI/CD pipelines.
-
-| Pain Point | Traditional Scanners | APKwarden |
-| :--- | :--- | :--- |
-| **Speed & Memory** | Decompiles whole APKs to 100,000+ `.java` files (10–30 mins, 4–8 GB heap). | **Direct Dalvik multi-DEX indexing** in memory (<60s, <2 GB heap). |
-| **False Positives** | Flags dangerous calls in unexported, private, unreachable classes. | **Attack-surface reachability gating** (`DIRECT`, `REACHABLE`, `UNKNOWN`, `UNREACHABLE`). |
-| **Confidentiality** | Requires uploading proprietary APKs to external cloud SaaS servers. | **100% Local & Zero-Cloud.** $0/month cost, zero code leaves your machine. |
-| **Bundle & Split Support**| Relies on native `aapt2`/`bundletool` binaries that crash on ARM64 containers. | **Pure-JVM Protobuf & Split Cluster parser** (100% cross-platform). |
-| **PR Regression Gating**| No attack surface tracking across pull requests. | **`surface.lock.json` & `apkwarden diff`** to catch unintended exports in PR diffs. |
-| **CI Integration** | Ad-hoc HTML or JSON output requiring custom parsers. | **OASIS SARIF 2.1.0**, GitHub Code Scanning, Step Summaries, & Baseline Debt Suppression. |
+| Capability | Semgrep (Source) | MobSF (Decompiled) | APKwarden (Compiled Artifact) |
+| :--- | :--- | :--- | :--- |
+| **Analysis Target** | Source code (`.java`, `.kt`) | Decompiled Java source | **Compiled artifact (`.apk`, `.aab`, Dalvik multi-DEX)** |
+| **Merged Manifest Visibility**| ❌ No (misses merged library manifests) | ⚠️ Partial (slow JADX decompile) | **✅ Yes (exact resolved runtime manifest & ARSC qualifiers)** |
+| **Execution Speed** | Fast (<1m) | Slow (10–30+ minutes on 100MB apps) | **⚡ Under 60 seconds (<2GB heap)** |
+| **CI Pull Request Shape** | Source linter | Heavy manual audit dashboard | **🎯 Native PR diff gate (`apkwarden diff`) & SARIF 2.1.0** |
+| **Reachability Gating** | Static AST matches | Flags unreachable internal code | **✅ 4-tier reachability (`DIRECT`, `REACHABLE`, `UNKNOWN`, `UNREACHABLE`)** |
+| **Offline Confidentiality** | Yes (local) | Local or hosted | **✅ 100% local, zero cloud uploads ($0 cost)** |
+| **Enterprise License** | Restricted registry license | GPL-3.0 (copyleft risk in CI) | **Permissive Apache-2.0 (100% clean for commercial use)** |
 
 ---
 
@@ -233,6 +238,16 @@ APKwarden employs a **two-phase reachability evaluation**:
    * **`REACHABLE`**: Statically proven reachable from an exported component via inter-method call graph. Severity: **CRITICAL / HIGH**.
    * **`UNKNOWN`**: Sink is invoked in indirect application code (e.g. ViewModel, Dagger injected service), but call path cannot be statically verified. Downgraded to **MEDIUM / TENTATIVE**.
    * **`UNREACHABLE`**: Component is explicitly unexported with zero exported callers. **Suppressed**.
+
+---
+
+## ⚠️ Scope & Non-Goals (What APKwarden is NOT)
+
+To maintain extreme speed (<60s) and zero-noise precision for CI/CD gating, APKwarden maintains intentional architectural boundaries:
+* **Not an emulator or dynamic sandbox:** APKwarden does not run the APK or hook runtime memory (not a replacement for Frida or manual penetration testing).
+* **Not a native C/C++ decompiler:** APKwarden inspects Dalvik bytecode, ELF binary headers, and string pools, but does not disassemble native `.so` machine code into C source.
+* **Not an iOS scanner:** Focused 100% on Android packages (`.apk`), split clusters (`.apks`), and App Bundles (`.aab`).
+* **Static analysis boundaries:** Highly dynamic runtime behavior (such as dynamic reflection via `Class.forName` or encrypted payload loaders) is detected as a blind spot, but cannot be statically traversed without decompilation.
 
 ---
 
