@@ -206,3 +206,16 @@ This document tracks all major architectural decisions, trade-offs, and design r
   4. **Community Health & Governance:** Added `SECURITY.md` (coordinated disclosure policy), structured GitHub issue templates (`rule_request.yml`, `bug_report.yml`), and pull request checklist (`PULL_REQUEST_TEMPLATE.md`).
   5. **Curated Launch Pipeline:** Prepared audience-targeted launch posts (`docs/launch/`) for Hacker News (Show HN), Reddit (r/androiddev, r/netsec), and Awesome lists (`android-security-awesome`, `awesome-sarif`, `awesome-static-analysis`).
 
+---
+
+## ADR 017: GitHub Public Release & Distribution Artifacts
+* **Date:** 2026-11-13
+* **Status:** Accepted
+* **Context:** Packaging and live deployment of APKwarden to GitHub under `no-hup/apkwarden` with release assets for immediate consumption by developers and CI workflows.
+* **Decision:**
+  1. **Public Repository Deployment:** Created and pushed the public repository `https://github.com/no-hup/apkwarden` via GitHub CLI.
+  2. **Discovery Topics:** Configured repository topics (`android`, `security`, `sast`, `static-analysis`, `sarif`, `apk-analyzer`, `appsec`, `mobile-security`, `github-actions`, `kotlin`, `developer-tools`) for organic search and GEO agent discoverability.
+  3. **Release Asset Packaging:** Built and verified standalone Fat JAR (`apkwarden-0.1.0-all.jar`), distribution archives, and calculated SHA-256 checksums.
+  4. **GitHub Release v0.1.0:** Tagged and published the official `v0.1.0` release (`https://github.com/no-hup/apkwarden/releases/tag/v0.1.0`) with release notes and checksums.
+  5. **Formula Alignment:** Updated `Formula/apkwarden.rb` with the exact SHA-256 hash (`b9a25fd21e9fa97b57317f91b58c0b7dc42da526a04d7607c5fb3531a0a440ed`) for Homebrew tap distribution.
+
