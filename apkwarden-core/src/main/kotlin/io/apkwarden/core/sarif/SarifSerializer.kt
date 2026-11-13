@@ -41,7 +41,7 @@ object SarifSerializer {
                 fullDescription = SarifText(rule.description),
                 defaultConfiguration = SarifConfiguration(level = defaultLevel),
                 help = SarifHelp(
-                    text = "See documentation at https://github.com/apkwarden/apkwarden",
+                    text = "See documentation at https://github.com/no-hup/apkwarden",
                     markdown = "**Rule:** ${rule.name}\n\n${rule.description}"
                 ),
                 properties = SarifRuleProperties(
@@ -122,7 +122,7 @@ object SarifSerializer {
                 driver = SarifDriver(
                     name = "APKWarden",
                     version = "0.1.0",
-                    informationUri = "https://github.com/shaurya/apkwarden",
+                    informationUri = "https://github.com/no-hup/apkwarden",
                     rules = sarifRules
                 )
             ),

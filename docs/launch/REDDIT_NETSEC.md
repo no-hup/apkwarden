@@ -5,7 +5,7 @@
 
 ## Post Body:
 ```markdown
-Link: https://github.com/shaurya/apkwarden
+Link: https://github.com/no-hup/apkwarden
 
 Traditional Android SAST tooling (MobSF, AndroBugs, Semgrep) creates high friction in automated CI/CD:
 1. Decompiling a 100MB production multidex APK into 50,000–150,000 Java source files via JADX takes 15–30+ minutes and 4–8 GB heap.
@@ -30,5 +30,5 @@ We developed **APKwarden**, a local-first Android static security analyzer and P
 * Does not disassemble native `.so` machine code into C source (inspects ELF headers and symbol tables only).
 * Highly dynamic reflection (`Class.forName(...)`) cannot be statically traversed and is flagged as a potential blind spot.
 
-Code, rules DSL, and benchmark fixtures: https://github.com/shaurya/apkwarden
+Code, rules DSL, and benchmark fixtures: https://github.com/no-hup/apkwarden
 ```

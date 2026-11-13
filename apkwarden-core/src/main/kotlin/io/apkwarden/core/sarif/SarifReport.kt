@@ -31,7 +31,7 @@ data class SarifTool(
 data class SarifDriver(
     val name: String = "APKWarden",
     val version: String = "1.0.0",
-    val informationUri: String = "https://github.com/apkwarden/apkwarden",
+    val informationUri: String = "https://github.com/no-hup/apkwarden",
     val rules: List<SarifRule>
 )
 

@@ -24,11 +24,11 @@ Traditional Android static scanners (like MobSF) were built for manual security 
 
 ### Try It in 5 Seconds
 ```bash
-git clone https://github.com/shaurya/apkwarden.git && cd apkwarden
+git clone https://github.com/no-hup/apkwarden.git && cd apkwarden
 ./bin/apkwarden scan samples/sample-vulnerable.apk
 ```
 
-Code, documentation, and SARIF specifications: https://github.com/shaurya/apkwarden
+Code, documentation, and SARIF specifications: https://github.com/no-hup/apkwarden
 
 Feedback and pull requests are very welcome!
 ```

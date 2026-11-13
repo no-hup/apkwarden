@@ -15,7 +15,7 @@ FROM eclipse-temurin:17-jre-alpine
 LABEL org.opencontainers.image.title="APKwarden" \
       org.opencontainers.image.description="Fast, reachability-first Android security analyzer" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/shaurya/apkwarden"
+      org.opencontainers.image.source="https://github.com/no-hup/apkwarden"
 
 # Install git and bash for diff --git-ref and script capabilities
 RUN apk add --no-cache git bash ca-certificates && \

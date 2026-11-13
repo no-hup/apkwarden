@@ -9,7 +9,7 @@ Submit these PRs after the repository is live on GitHub.
 
 ### Proposed Entry:
 ```markdown
-* [APKwarden](https://github.com/shaurya/apkwarden) - Fast, reachability-first Android static security analyzer and PR gate. Analyzes Dalvik multi-DEX bytecode directly in <60 seconds, diffs attack surface in PRs via `surface.lock.json`, and exports OASIS SARIF 2.1.0 for GitHub Code Scanning. Apache-2.0.
+* [APKwarden](https://github.com/no-hup/apkwarden) - Fast, reachability-first Android static security analyzer and PR gate. Analyzes Dalvik multi-DEX bytecode directly in <60 seconds, diffs attack surface in PRs via `surface.lock.json`, and exports OASIS SARIF 2.1.0 for GitHub Code Scanning. Apache-2.0.
 ```
 
 ### PR Title:
@@ -39,8 +39,8 @@ types:
   - apk
   - aab
 license: Apache-2.0
-homepage: https://github.com/shaurya/apkwarden
-source: https://github.com/shaurya/apkwarden
+homepage: https://github.com/no-hup/apkwarden
+source: https://github.com/no-hup/apkwarden
 description: "Fast, reachability-first Android security analyzer and PR gate. Scans Dalvik bytecode directly in under 60 seconds with native SARIF 2.1.0 output."
 ```
 
@@ -54,5 +54,5 @@ description: "Fast, reachability-first Android security analyzer and PR gate. Sc
 
 ### Proposed Entry:
 ```markdown
-* [APKwarden](https://github.com/shaurya/apkwarden) - Static Android security analyzer that outputs OASIS SARIF 2.1.0 with GitHub Code Scanning `@SerialName("security-severity")` tags, stable logical alert fingerprints, and native baseline suppressions.
+* [APKwarden](https://github.com/no-hup/apkwarden) - Static Android security analyzer that outputs OASIS SARIF 2.1.0 with GitHub Code Scanning `@SerialName("security-severity")` tags, stable logical alert fingerprints, and native baseline suppressions.
 ```

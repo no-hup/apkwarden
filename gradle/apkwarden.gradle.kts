@@ -9,7 +9,7 @@
 //
 
 val apkwardenVersion = "0.1.0"
-val apkwardenJarUrl = "https://github.com/shaurya/apkwarden/releases/download/v$apkwardenVersion/apkwarden-v$apkwardenVersion-all.jar"
+val apkwardenJarUrl = "https://github.com/no-hup/apkwarden/releases/download/v$apkwardenVersion/apkwarden-v$apkwardenVersion-all.jar"
 val apkwardenCacheDir = File(rootProject.buildDir, "apkwarden")
 val apkwardenJarFile = File(apkwardenCacheDir, "apkwarden-$apkwardenVersion-all.jar")
 

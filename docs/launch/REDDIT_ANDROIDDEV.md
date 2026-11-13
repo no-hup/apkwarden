@@ -24,7 +24,7 @@ To solve this, we built **APKwarden** — a fast, local-first Android security a
 
 ### 5-Second Local Smoke Test:
 ```bash
-git clone https://github.com/shaurya/apkwarden.git && cd apkwarden
+git clone https://github.com/no-hup/apkwarden.git && cd apkwarden
 ./bin/apkwarden scan samples/sample-vulnerable.apk
 ```
 
@@ -38,7 +38,7 @@ Or as a composite GitHub Action:
     fail-on-breaking: 'true'
 ```
 
-Repo: https://github.com/shaurya/apkwarden
+Repo: https://github.com/no-hup/apkwarden
 
 Would love your thoughts, especially on tricky manifest merger edge cases or rules you'd like to see added!
 ```

@@ -1,6 +1,6 @@
 # APKwarden 🛡️ — Fast, Local Android APK/AAB Security Scanner & PR Diff Gate
 
-[![CI](https://github.com/shaurya/apkwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/shaurya/apkwarden/actions/workflows/ci.yml)
+[![CI](https://github.com/no-hup/apkwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/no-hup/apkwarden/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![SARIF 2.1.0](https://img.shields.io/badge/SARIF-2.1.0_Compliant-green.svg)](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
 [![JDK](https://img.shields.io/badge/JDK-17%2B-orange.svg)](https://adoptium.net)
@@ -11,7 +11,7 @@
 
 ### Try it in 5 seconds (Zero Setup):
 ```bash
-git clone https://github.com/shaurya/apkwarden.git && cd apkwarden
+git clone https://github.com/no-hup/apkwarden.git && cd apkwarden
 ./bin/apkwarden scan samples/sample-vulnerable.apk
 ```
 
@@ -70,7 +70,7 @@ brew install shaurya/tap/apkwarden
 Requires Java 17+:
 ```bash
 # Download latest release
-curl -sSL -O https://github.com/shaurya/apkwarden/releases/latest/download/apkwarden-all.jar
+curl -sSL -O https://github.com/no-hup/apkwarden/releases/latest/download/apkwarden-all.jar
 
 # Run directly
 java -jar apkwarden-all.jar --help
@@ -83,7 +83,7 @@ docker run --rm -v $(pwd):/workspace ghcr.io/shaurya/apkwarden:latest scan /work
 
 ### 4. Build from Source
 ```bash
-git clone https://github.com/shaurya/apkwarden.git
+git clone https://github.com/no-hup/apkwarden.git
 cd apkwarden
 ./bin/apkwarden --help
 ```

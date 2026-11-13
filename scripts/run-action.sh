@@ -49,8 +49,8 @@ else
     JAR_PATH="$CACHE_DIR/apkwarden-$VERSION-all.jar"
     if [ ! -f "$JAR_PATH" ]; then
         echo "⬇️ Downloading APKwarden $VERSION standalone executable..."
-        DOWNLOAD_URL="https://github.com/shaurya/apkwarden/releases/download/$VERSION/apkwarden-$VERSION-all.jar"
-        SUMS_URL="https://github.com/shaurya/apkwarden/releases/download/$VERSION/SHA256SUMS"
+        DOWNLOAD_URL="https://github.com/no-hup/apkwarden/releases/download/$VERSION/apkwarden-$VERSION-all.jar"
+        SUMS_URL="https://github.com/no-hup/apkwarden/releases/download/$VERSION/SHA256SUMS"
         TMP_JAR="${JAR_PATH}.tmp"
         if curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_JAR"; then
             # Verify checksum if SHA256SUMS is available

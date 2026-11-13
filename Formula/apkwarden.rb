@@ -1,7 +1,7 @@
 class Apkwarden < Formula
   desc "Fast, reachability-first Android security analyzer"
-  homepage "https://github.com/shaurya/apkwarden"
-  url "https://github.com/shaurya/apkwarden/releases/download/v0.1.0/apkwarden-v0.1.0.tar.gz"
+  homepage "https://github.com/no-hup/apkwarden"
+  url "https://github.com/no-hup/apkwarden/releases/download/v0.1.0/apkwarden-v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "Apache-2.0"
 
