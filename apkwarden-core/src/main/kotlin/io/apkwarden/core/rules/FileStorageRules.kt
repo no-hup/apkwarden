@@ -72,6 +72,7 @@ class DirtyStreamTraversalRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "Method calls openInputStream and Uri.getLastPathSegment() without File.getCanonicalPath()",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
                         reachability = reachability,
@@ -119,6 +120,7 @@ class ZipSlipRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "ZipInputStream.getNextEntry() and ZipEntry.getName() used without File.getCanonicalPath()",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                     )
@@ -184,6 +186,7 @@ class WorldReadableWritableRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "$modeName flag (0x${(regVal as RegisterValue.IntConstant).value.toString(16)}) passed to ${cs.targetMethod}",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                     )
@@ -233,6 +236,7 @@ class InsecureSharedPrefsRule : Rule {
                             component = cs.callerClass,
                             targetClass = cs.callerClass,
                             targetMethod = cs.callerMethod,
+                            methodDescriptor = analyzer.getMethodDescriptor(),
                             evidence = "SharedPreferences.Editor.putString(\"${regVal.value}\", ...)",
                             lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                         )

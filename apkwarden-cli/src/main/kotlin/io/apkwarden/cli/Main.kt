@@ -8,6 +8,7 @@ import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
+import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.versionOption
 import com.github.ajalt.clikt.parameters.types.file
@@ -17,6 +18,7 @@ import io.apkwarden.core.diff.DiffSeverity
 import io.apkwarden.core.diff.SurfaceDiffEngine
 import io.apkwarden.core.diff.SurfaceDiffResult
 import io.apkwarden.core.lock.SurfaceLockGenerator
+import io.apkwarden.core.model.FindingOwner
 import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.ScanReport
 import io.apkwarden.core.model.Severity
@@ -330,6 +332,8 @@ class ScanCommand : CliktCommand(name = "scan") {
     private val baselineFile by option("--baseline", help = "Path to .apkwarden-baseline.json to suppress grandfathered findings").file(mustExist = true)
     private val generateBaseline by option("--generate-baseline", help = "Generate a baseline JSON file containing all findings from this scan").file()
     private val failOn by option("--fail-on", help = "Exit with code 2 if active findings at or above severity exist (CRITICAL, HIGH, MEDIUM, LOW, NEVER)").default("CRITICAL")
+    private val failOnLibraries by option("--fail-on-libraries", help = "Also enforce --fail-on gating against third-party library findings").flag(default = false)
+    private val firstPartyPrefixes by option("--first-party", help = "Additional package prefixes to classify as first-party application code (can be specified multiple times)").multiple()
 
     private val json = Json { prettyPrint = true }
 
@@ -338,7 +342,7 @@ class ScanCommand : CliktCommand(name = "scan") {
             echo("Scanning ${target.name} for Android security vulnerabilities...")
         }
 
-        val rawReport = ApkAnalyzer.scan(target)
+        val rawReport = ApkAnalyzer.scan(target, firstPartyPrefixes = firstPartyPrefixes.toSet())
 
         // Apply baseline if provided
         val finalFindings = if (baselineFile != null) {
@@ -387,7 +391,7 @@ class ScanCommand : CliktCommand(name = "scan") {
             echo("Package:         ${surface.packageName}")
             echo("SDK Target:      minSdk=${surface.minSdk}, targetSdk=${surface.targetSdk}")
             echo("Primary Stack:   ${fp.primaryStack}")
-            echo("Security Score:  ${summary.securityScore}/100")
+            echo("Security Score:  ${summary.securityScore}/100 (First-Party App: ${summary.firstPartyScore}/100 | Third-Party Libs: ${summary.libraryScore}/100)")
             val suppStr = if (suppressedCount > 0) " | SUPPRESSED: $suppressedCount" else ""
             echo("Findings:        CRITICAL: ${summary.criticalCount} | HIGH: ${summary.highCount} | MEDIUM: ${summary.mediumCount} | LOW: ${summary.lowCount} | INFO: ${summary.infoCount}$suppStr")
             echo("──────────────────────────────────────────────────────────────────────")
@@ -425,6 +429,12 @@ class ScanCommand : CliktCommand(name = "scan") {
                         echo("=== $badge FINDINGS ===")
                     }
 
+                    val ownerBadge = when (finding.owner) {
+                        FindingOwner.FIRST_PARTY -> "[FIRST-PARTY]"
+                        FindingOwner.LIBRARY -> "[LIBRARY]"
+                        FindingOwner.UNKNOWN -> "[UNKNOWN-OWNER]"
+                    }
+
                     val reachabilityBadge = when (finding.reachability) {
                         Reachability.DIRECT -> "[DIRECT]"
                         Reachability.REACHABLE -> "[REACHABLE]"
@@ -432,13 +442,14 @@ class ScanCommand : CliktCommand(name = "scan") {
                         Reachability.UNREACHABLE -> "[UNREACHABLE]"
                     }
 
-                    echo("• [${finding.id}] ${finding.title} ($reachabilityBadge ${finding.cwe} / ${finding.owasp})")
+                    echo("• [${finding.id}] ${finding.title} ($ownerBadge $reachabilityBadge ${finding.cwe} / ${finding.owasp})")
                     echo("  Confidence:   ${finding.confidence}")
                     if (finding.component != null) {
                         echo("  Component:    ${finding.component}")
                     }
                     if (finding.targetMethod != null) {
-                        echo("  Method:       ${finding.targetClass}#${finding.targetMethod}")
+                        val methodDesc = if (finding.methodDescriptor != null) finding.methodDescriptor else ""
+                        echo("  Method:       ${finding.targetClass}#${finding.targetMethod}$methodDesc")
                     }
                     if (finding.evidence != null) {
                         echo("  Evidence:     ${finding.evidence}")
@@ -483,10 +494,16 @@ class ScanCommand : CliktCommand(name = "scan") {
                 throw ProgramResult(2)
             }
             val thresholdOrdinal = failSeverity.ordinal
-            val violations = report.findings.filter { !it.isSuppressed && it.severity.ordinal <= thresholdOrdinal }
+            val violations = report.findings.filter { finding ->
+                if (finding.isSuppressed) return@filter false
+                // CRITICAL findings fail regardless of library or first-party ownership
+                if (finding.severity == Severity.CRITICAL) return@filter true
+                val inScope = failOnLibraries || finding.owner == FindingOwner.FIRST_PARTY || finding.owner == FindingOwner.UNKNOWN
+                inScope && finding.severity.ordinal <= thresholdOrdinal
+            }
             if (violations.isNotEmpty()) {
                 if (!jsonOutput) {
-                    echo("❌ CI GATE FAILED: Found ${violations.size} active finding(s) at or above $failSeverity threshold.")
+                    echo("❌ CI GATE FAILED: Found ${violations.size} active in-scope finding(s) at or above $failSeverity threshold.")
                 }
                 throw ProgramResult(2)
             }
@@ -553,7 +570,7 @@ private fun writeGitHubScanSummary(
     sb.appendLine()
     sb.appendLine("| Target | Package | Target SDK | Security Score | Active Findings |")
     sb.appendLine("| :--- | :--- | :--- | :--- | :--- |")
-    sb.appendLine("| `${apkTarget.name}` | `${report.attackSurface.packageName}` | `${report.attackSurface.targetSdk}` | **${report.summary.securityScore} / 100** | 🔴 $crit Critical \\| 🟠 $high High \\| 🟡 $med Med \\| 🔵 $low Low |")
+    sb.appendLine("| `${apkTarget.name}` | `${report.attackSurface.packageName}` | `${report.attackSurface.targetSdk}` | **${report.summary.securityScore} / 100** (App: ${report.summary.firstPartyScore} \\| Libs: ${report.summary.libraryScore}) | 🔴 $crit Critical \\| 🟠 $high High \\| 🟡 $med Med \\| 🔵 $low Low |")
     sb.appendLine()
 
     val topFindings = activeFindings.filter { it.severity == Severity.CRITICAL || it.severity == Severity.HIGH }
@@ -562,8 +579,13 @@ private fun writeGitHubScanSummary(
         sb.appendLine()
         for (f in topFindings) {
             val badge = if (f.severity == Severity.CRITICAL) "🔴 [CRITICAL]" else "🟠 [HIGH]"
+            val ownerBadge = when (f.owner) {
+                FindingOwner.FIRST_PARTY -> "[FIRST-PARTY]"
+                FindingOwner.LIBRARY -> "[LIBRARY]"
+                FindingOwner.UNKNOWN -> "[UNKNOWN-OWNER]"
+            }
             sb.appendLine("<details open>")
-            sb.appendLine("<summary><b>$badge [${f.id}] ${f.title}</b></summary>")
+            sb.appendLine("<summary><b>$badge [${f.id}] ${f.title} ($ownerBadge)</b></summary>")
             sb.appendLine()
             sb.appendLine("- **Component:** `${f.component ?: "N/A"}`")
             sb.appendLine("- **Method:** `${f.targetClass ?: ""}#${f.targetMethod ?: ""}`")

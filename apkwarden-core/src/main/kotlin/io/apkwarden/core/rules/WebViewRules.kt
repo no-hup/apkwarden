@@ -80,6 +80,7 @@ class WebViewArbitraryUrlRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "WebView.loadUrl invoked with tainted intent URL argument ($regVal)",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
                         reachability = reachability,
@@ -136,6 +137,7 @@ class WebViewFileAccessRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "${cs.targetMethod}(true) invoked in ${cs.callerClass}",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                     )
@@ -161,6 +163,7 @@ class JavascriptInterfaceRule : Rule {
         val jsInterfaceCalls = context.dexIndex.findCallSites("android.webkit.WebView", "addJavascriptInterface")
 
         for (cs in jsInterfaceCalls) {
+            val analyzer = MethodAnalyzer(cs.method)
             val isRceRisk = context.attackSurface.minSdk < 17
             val severity = if (isRceRisk) Severity.CRITICAL else Severity.MEDIUM
 
@@ -180,6 +183,7 @@ class JavascriptInterfaceRule : Rule {
                     component = cs.callerClass,
                     targetClass = cs.callerClass,
                     targetMethod = cs.callerMethod,
+                    methodDescriptor = analyzer.getMethodDescriptor(),
                     evidence = "Call to WebView.addJavascriptInterface in ${cs.callerClass}",
                     lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                 )

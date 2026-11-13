@@ -214,6 +214,41 @@ class MethodAnalyzer(private val method: Method) {
                 containsCallTo("java.io.File", "getName")
     }
 
+    fun getMethodDescriptor(): String {
+        val params = method.parameterTypes.joinToString("") { it.toString() }
+        return "($params)${method.returnType}"
+    }
+
+    /**
+     * Checks whether all calls to StringBuilder.append in this method prior to `beforeInstructionIndex`
+     * have constant arguments (const-string or const int/literal).
+     */
+    fun isAllStringBuilderAppendsConstant(beforeInstructionIndex: Int): Boolean {
+        var hasAppends = false
+        val limit = minOf(beforeInstructionIndex, instructions.size)
+        for (i in 0 until limit) {
+            val inst = instructions[i]
+            if (inst is ReferenceInstruction) {
+                val ref = inst.reference as? MethodReference ?: continue
+                val defClass = ClassHierarchy.normalizeType(ref.definingClass)
+                if (defClass == "java.lang.StringBuilder" && ref.name == "append") {
+                    hasAppends = true
+                    val args = getInvocationArgs(inst)
+                    if (args.size >= 2) {
+                        val argVal = getRegisterValue(args[1], i)
+                        val isConst = argVal is RegisterValue.StringConstant || argVal is RegisterValue.IntConstant
+                        if (!isConst) {
+                            return false
+                        }
+                    } else {
+                        return false
+                    }
+                }
+            }
+        }
+        return hasAppends
+    }
+
     /**
      * Extracts a contextual Dalvik disassembly snippet centered around target instruction index.
      */

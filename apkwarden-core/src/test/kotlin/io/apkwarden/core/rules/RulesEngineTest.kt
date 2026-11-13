@@ -544,4 +544,186 @@ class RulesEngineTest {
         assertThat(f.severity).isEqualTo(io.apkwarden.core.model.Severity.MEDIUM)
         assertThat(f.confidence).isEqualTo(io.apkwarden.core.model.Confidence.TENTATIVE)
     }
+
+    @Test
+    fun `does not flag custom X509TrustManager when checkServerTrusted delegates to sibling method that throws`() {
+        val smali = """
+            .class public Lcom/example/DelegatingTrustManager;
+            .super Ljava/lang/Object;
+            .implements Ljavax/net/ssl/X509TrustManager;
+
+            .method public checkServerTrusted([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                invoke-direct {p0, p1, p2}, Lcom/example/DelegatingTrustManager;->verifyHelper([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                return-void
+            .end method
+
+            .method private verifyHelper([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 4
+                new-instance v0, Ljava/security/cert/CertificateException;
+                invoke-direct {v0}, Ljava/security/cert/CertificateException;-><init>()V
+                throw v0
+            .end method
+
+            .method public checkClientTrusted([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                return-void
+            .end method
+
+            .method public getAcceptedIssuers()[Ljava/security/cert/X509Certificate;
+                .registers 2
+                const/4 v0, 0x0
+                return-object v0
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = InsecureTrustManagerRule().analyze(ctx)
+        assertThat(findings).isEmpty()
+    }
+
+    @Test
+    fun `flags custom X509TrustManager when checkServerTrusted delegates to sibling that only logs and returns void`() {
+        val smali = """
+            .class public Lcom/example/LoggingTrustManager;
+            .super Ljava/lang/Object;
+            .implements Ljavax/net/ssl/X509TrustManager;
+
+            .method public checkServerTrusted([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                invoke-direct {p0, p1, p2}, Lcom/example/LoggingTrustManager;->logHelper([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                return-void
+            .end method
+
+            .method private logHelper([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                return-void
+            .end method
+
+            .method public checkClientTrusted([Ljava/security/cert/X509Certificate;Ljava/lang/String;)V
+                .registers 3
+                return-void
+            .end method
+
+            .method public getAcceptedIssuers()[Ljava/security/cert/X509Certificate;
+                .registers 2
+                const/4 v0, 0x0
+                return-object v0
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = InsecureTrustManagerRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-013")
+        assertThat(findings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
+
+    @Test
+    fun `cleartext rule matches host precisely, skipping XML schemas but catching evil query spoofing`() {
+        val smali = """
+            .class public Lcom/example/CleartextDemo;
+            .super Ljava/lang/Object;
+
+            .method public testUrls()V
+                .registers 5
+                const-string v0, "http://www.w3.org/2000/svg"
+                const-string v1, "http://javax.xml.XMLConstants/feature/secure-processing"
+                const-string v2, "http://evil.com/leak?target=w3.org"
+                const-string v3, "http://10.0.2.2/api/v1/auth"
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, targetSdk = 26)
+        val findings = CleartextTrafficRule().analyze(ctx)
+        val endpointFindings = findings.filter { it.title == "Cleartext HTTP Host in Application Bytecode" }
+        assertThat(endpointFindings).anyMatch { it.description.contains("'evil.com'") }
+        assertThat(endpointFindings).anyMatch { it.description.contains("'10.0.2.2'") }
+        assertThat(endpointFindings).noneMatch { it.description.contains("'w3.org'") || it.description.contains("'www.w3.org'") }
+    }
+
+    @Test
+    fun `sql injection skips constant string builder query but flags dynamic concatenation`() {
+        val smali = """
+            .class public Lcom/example/SqlBuilderDemo;
+            .super Ljava/lang/Object;
+
+            .method public safeCreate(Landroid/database/sqlite/SQLiteDatabase;)V
+                .registers 5
+                new-instance v0, Ljava/lang/StringBuilder;
+                invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+                const-string v1, "CREATE TABLE users ("
+                invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                const-string v2, "id INTEGER PRIMARY KEY, name TEXT)"
+                invoke-virtual {v0, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+                move-result-object v3
+                invoke-virtual {p1, v3}, Landroid/database/sqlite/SQLiteDatabase;->execSQL(Ljava/lang/String;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = SqlInjectionRule().analyze(ctx)
+        assertThat(findings).isEmpty()
+    }
+
+    @Test
+    fun `hardcoded secrets classifies telemetry tokens and suppresses dotted identifiers`() {
+        val smali = """
+            .class public Lcom/example/SecretsRefinementDemo;
+            .super Ljava/lang/Object;
+
+            .method public testStrings()V
+                .registers 5
+                const-string v0, "phc_1234567890abcdef1234567890abcdef"
+                const-string v1, "https://0123456789abcdef0123456789abcdef@o123456.ingest.sentry.io/7890"
+                const-string v2, "pub0123456789abcdef0123456789abcdef"
+                const-string v3, "com.wispr.flowapp.service.ACTION_PERMISSION_GRANTED"
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = HardcodedSecretsRule().analyze(ctx)
+
+        val posthog = findings.find { it.title.contains("PostHog") }
+        assertThat(posthog).isNotNull
+        assertThat(posthog!!.severity).isEqualTo(Severity.INFO)
+        assertThat(posthog.confidence).isEqualTo(Confidence.CERTAIN)
+
+        val sentry = findings.find { it.title.contains("Sentry") }
+        assertThat(sentry).isNotNull
+        assertThat(sentry!!.severity).isEqualTo(Severity.INFO)
+        assertThat(sentry.confidence).isEqualTo(Confidence.CERTAIN)
+
+        val datadog = findings.find { it.title.contains("Datadog") }
+        assertThat(datadog).isNotNull
+        assertThat(datadog!!.severity).isEqualTo(Severity.LOW)
+        assertThat(datadog.confidence).isEqualTo(Confidence.TENTATIVE)
+
+        assertThat(findings.any { it.evidence?.contains("ACTION_PERMISSION_GRANTED") == true }).isFalse()
+    }
+
+    @Test
+    fun `flags real PEM private key but ignores bare parser header string`() {
+        val smali = """
+            .class public Lcom/example/PemDemo;
+            .super Ljava/lang/Object;
+
+            .method public testKeys()V
+                .registers 3
+                const-string v0, "-----BEGIN PRIVATE KEY-----"
+                const-string v1, "-----BEGIN RSA PRIVATE KEY-----\\nMIIEowIBAAKCAQEA0Y1+abcdefghijklmn1234567890\\n-----END RSA PRIVATE KEY-----"
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = HardcodedSecretsRule().analyze(ctx)
+        val pemFindings = findings.filter { it.title.contains("PEM Encoded Private Key") }
+        assertThat(pemFindings).hasSize(1)
+        assertThat(pemFindings[0].severity).isEqualTo(Severity.CRITICAL)
+    }
 }

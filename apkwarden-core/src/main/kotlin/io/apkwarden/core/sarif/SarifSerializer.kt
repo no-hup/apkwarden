@@ -71,7 +71,7 @@ object SarifSerializer {
             } else null
 
             // Stable logical fingerprint to prevent GitHub alert churn on line shift / rebuilds
-            val fingerprintRaw = "${finding.id}:${finding.targetClass ?: ""}:${finding.targetMethod ?: ""}"
+            val fingerprintRaw = "${finding.id}:${finding.targetClass ?: ""}:${finding.targetMethod ?: ""}:${finding.methodDescriptor ?: ""}"
             val fingerprintHash = MessageDigest.getInstance("SHA-256")
                 .digest(fingerprintRaw.toByteArray(Charsets.UTF_8))
                 .take(8)
@@ -103,13 +103,17 @@ object SarifSerializer {
                     "logicalFingerprint/v1" to fingerprintHash
                 ),
                 suppressions = suppressions,
-                properties = mapOf(
-                    "confidence" to finding.confidence.name,
-                    "reachability" to finding.reachability.name,
-                    "cwe" to finding.cwe,
-                    "owasp" to finding.owasp,
-                    "remediation" to finding.remediation
-                )
+                properties = buildMap {
+                    put("confidence", finding.confidence.name)
+                    put("reachability", finding.reachability.name)
+                    put("owner", finding.owner.name)
+                    if (finding.methodDescriptor != null) {
+                        put("methodDescriptor", finding.methodDescriptor!!)
+                    }
+                    put("cwe", finding.cwe)
+                    put("owasp", finding.owasp)
+                    put("remediation", finding.remediation)
+                }
             )
         }
 

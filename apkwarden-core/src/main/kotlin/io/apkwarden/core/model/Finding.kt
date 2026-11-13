@@ -27,6 +27,13 @@ enum class Reachability {
 }
 
 @Serializable
+enum class FindingOwner {
+    FIRST_PARTY,
+    LIBRARY,
+    UNKNOWN
+}
+
+@Serializable
 data class Finding(
     val id: String,
     val title: String,
@@ -39,11 +46,13 @@ data class Finding(
     val component: String? = null,
     val targetClass: String? = null,
     val targetMethod: String? = null,
+    val methodDescriptor: String? = null,
     val evidence: String? = null,
     val lineOrOffset: String? = null,
-    val reachability: Reachability = Reachability.DIRECT,
+    val reachability: Reachability = Reachability.UNKNOWN,
     val codeSnippet: String? = null,
-    val isSuppressed: Boolean = false
+    val isSuppressed: Boolean = false,
+    val owner: FindingOwner = FindingOwner.UNKNOWN
 )
 
 @Serializable
@@ -54,7 +63,9 @@ data class ScanSummary(
     val mediumCount: Int,
     val lowCount: Int,
     val infoCount: Int,
-    val securityScore: Int
+    val securityScore: Int,
+    val firstPartyScore: Int = securityScore,
+    val libraryScore: Int = securityScore
 )
 
 @Serializable

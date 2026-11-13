@@ -22,6 +22,20 @@ class IntentRedirectionRule : Rule {
     override val description = "Exported component receives an Intent and forwards it to startActivity, startService, or sendBroadcast without validating the destination component or package."
     override val targetSinks = setOf("startActivity", "startActivityForResult", "startService", "sendBroadcast")
 
+    private val knownLibraryPrefixes = listOf(
+        "android.", "androidx.", "com.google.", "com.android.",
+        "io.grpc.", "com.facebook.", "com.appsflyer.", "com.adjust.",
+        "io.sentry.", "com.bytedance.", "com.mbridge.", "com.applovin.",
+        "com.unity3d.", "com.ironsource.", "com.vungle.", "com.inmobi.",
+        "com.flurry.", "com.crashlytics.", "io.reactivex.", "kotlin.",
+        "kotlinx.", "okhttp3.", "okio.", "retrofit2.", "org.apache."
+    )
+
+    private fun isAppClass(className: String): Boolean {
+        val norm = className.removePrefix("L").replace('/', '.').removeSuffix(";")
+        return knownLibraryPrefixes.none { norm.startsWith(it) }
+    }
+
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
         val startCallSites = context.dexIndex.findCallSites("android.content.Context", "startActivity") +
@@ -50,27 +64,59 @@ class IntentRedirectionRule : Rule {
             }
 
             if (isTainted) {
-                val (title, severity, confidence, desc) = when (reachability) {
-                    Reachability.DIRECT -> Quadruple(
-                        "Intent Redirection in Exported Component",
-                        Severity.CRITICAL,
-                        Confidence.FIRM,
-                        "Exported class '${cs.callerClass}' forwards an Intent received from external callers directly to '${cs.targetMethod}' without verifying its target package or component."
-                    )
-                    Reachability.REACHABLE -> Quadruple(
-                        "Intent Redirection via Reachable Exported Component",
-                        Severity.HIGH,
-                        Confidence.FIRM,
-                        "Class '${cs.callerClass}' is reachable from an exported component and forwards an Intent received from callers to '${cs.targetMethod}' without verifying its target package or component."
-                    )
-                    Reachability.UNKNOWN -> Quadruple(
-                        "Potential Intent Redirection (Indirect / Unknown Entry Point)",
-                        Severity.MEDIUM,
-                        Confidence.TENTATIVE,
-                        "Class '${cs.callerClass}' forwards an Intent received from callers to '${cs.targetMethod}'. An entry point from an exported component was not statically resolved within 3 hops, but this may be reachable dynamically."
-                    )
-                    Reachability.UNREACHABLE -> continue
+                // Attribution for one-line intent helpers (androidx.core.content.ContextCompat and androidx.activity.ComponentActivity)
+                val isFrameworkHelper = cs.callerClass == "androidx.core.content.ContextCompat" ||
+                        cs.callerClass == "androidx.activity.ComponentActivity"
+
+                if (isFrameworkHelper) {
+                    val directCallers = context.dexIndex.findCallSites(cs.callerClass, cs.targetMethod)
+                    val appCallers = mutableListOf<io.apkwarden.core.dex.CallSite>()
+
+                    for (dc in directCallers) {
+                        if (isAppClass(dc.callerClass)) {
+                            appCallers.add(dc)
+                        } else if (dc.callerClass == "androidx.core.content.ContextCompat" || dc.callerClass == "androidx.activity.ComponentActivity") {
+                            val secondCallers = context.dexIndex.findCallSites(dc.callerClass, dc.targetMethod)
+                            for (sc in secondCallers) {
+                                if (isAppClass(sc.callerClass)) {
+                                    appCallers.add(sc)
+                                }
+                            }
+                        }
+                    }
+
+                    if (appCallers.isNotEmpty()) {
+                        for (ac in appCallers.distinctBy { "${it.callerClass}#${it.callerMethod}" }) {
+                            val appReach = context.dexIndex.checkReachability(ac.callerClass, context.attackSurface)
+                            if (appReach == Reachability.UNREACHABLE) continue
+                            val (t, s, c, d) = getFindingDetails(appReach, ac.callerClass, cs.targetMethod)
+                            val acAnalyzer = MethodAnalyzer(ac.method)
+                            findings.add(
+                                Finding(
+                                    id = id,
+                                    title = t,
+                                    severity = s,
+                                    confidence = c,
+                                    cwe = "CWE-926",
+                                    owasp = "M4: Insufficient Input/Output Validation",
+                                    description = d,
+                                    remediation = "Validate that the forwarded Intent's component package matches your application before passing to ${cs.callerClass}.${cs.targetMethod}.",
+                                    component = ac.callerClass,
+                                    targetClass = ac.callerClass,
+                                    targetMethod = ac.callerMethod,
+                                    methodDescriptor = acAnalyzer.getMethodDescriptor(),
+                                    evidence = "App method calls forwarder ${cs.callerClass}#${cs.targetMethod} with tainted Intent (underlying sink: ${cs.targetClass}#${cs.targetMethod})",
+                                    lineOrOffset = "Instruction offset: ${ac.instructionIndex}",
+                                    reachability = appReach,
+                                    codeSnippet = acAnalyzer.getDisassemblySnippet(ac.instructionIndex)
+                                )
+                            )
+                        }
+                        continue
+                    }
                 }
+
+                val (title, severity, confidence, desc) = getFindingDetails(reachability, cs.callerClass, cs.targetMethod)
 
                 findings.add(
                     Finding(
@@ -85,6 +131,7 @@ class IntentRedirectionRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "Call to ${cs.targetClass}#${cs.targetMethod} with tainted register v$intentReg ($regVal)",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
                         reachability = reachability,
@@ -94,6 +141,35 @@ class IntentRedirectionRule : Rule {
             }
         }
         return findings
+    }
+
+    private fun getFindingDetails(reachability: Reachability, callerClass: String, targetMethod: String): Quadruple<String, Severity, Confidence, String> {
+        return when (reachability) {
+            Reachability.DIRECT -> Quadruple(
+                "Intent Redirection in Exported Component",
+                Severity.CRITICAL,
+                Confidence.FIRM,
+                "Exported class '$callerClass' forwards an Intent received from external callers directly to '$targetMethod' without verifying its target package or component."
+            )
+            Reachability.REACHABLE -> Quadruple(
+                "Intent Redirection via Reachable Exported Component",
+                Severity.HIGH,
+                Confidence.FIRM,
+                "Class '$callerClass' is reachable from an exported component and forwards an Intent received from callers to '$targetMethod' without verifying its target package or component."
+            )
+            Reachability.UNKNOWN -> Quadruple(
+                "Potential Intent Redirection (Indirect / Unknown Entry Point)",
+                Severity.MEDIUM,
+                Confidence.TENTATIVE,
+                "Class '$callerClass' forwards an Intent received from callers to '$targetMethod'. An entry point from an exported component was not statically resolved within 3 hops, but this may be reachable dynamically."
+            )
+            Reachability.UNREACHABLE -> Quadruple(
+                "Intent Redirection",
+                Severity.LOW,
+                Confidence.TENTATIVE,
+                "Class '$callerClass' forwards an Intent to '$targetMethod'."
+            )
+        }
     }
 }
 
@@ -170,6 +246,7 @@ class MutablePendingIntentRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = detail,
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                     )
@@ -230,6 +307,7 @@ class ImplicitPendingIntentRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "Method lacks setPackage/setComponent calls before PendingIntent.${cs.targetMethod}",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                     )
@@ -282,6 +360,7 @@ class DynamicReceiverExportRule : Rule {
                         component = cs.callerClass,
                         targetClass = cs.callerClass,
                         targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "Call to registerReceiver with ${args.size - 1} parameters (missing export flags)",
                         lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
                     )
@@ -334,6 +413,7 @@ class DeepLinkHostValidationRule : Rule {
                             component = activityName,
                             targetClass = activityName,
                             targetMethod = method.name,
+                            methodDescriptor = analyzer.getMethodDescriptor(),
                             evidence = "Method calls Uri.getHost() and weak substring matching (${if (hasWeakContains) "contains" else "endsWith"})",
                             lineOrOffset = null
                         )

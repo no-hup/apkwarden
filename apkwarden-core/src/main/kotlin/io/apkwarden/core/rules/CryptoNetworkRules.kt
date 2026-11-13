@@ -146,20 +146,35 @@ class InsecureTrustManagerRule : Rule {
                     if (method.name == "checkServerTrusted") {
                         val impl = method.implementation ?: continue
                         val instructions = impl.instructions.toList()
+                        val descriptor = "(${method.parameters.joinToString("") { it.type }})${method.returnType}"
 
-                        // If the method delegates to another TrustManager, suppress
-                        val delegates = instructions.any { inst ->
-                            if (inst is ReferenceInstruction) {
-                                (inst.reference as? MethodReference)?.name == "checkServerTrusted"
-                            } else false
+                        fun canThrowOrValidate(m: com.android.tools.smali.dexlib2.iface.Method, depth: Int, visited: MutableSet<String>): Boolean {
+                            val mImpl = m.implementation ?: return false
+                            val sig = "${m.definingClass}#${m.name}(${m.parameters.joinToString("") { it.type }})"
+                            if (!visited.add(sig)) return false
+
+                            for (inst in mImpl.instructions) {
+                                if (inst.opcode == Opcode.THROW) return true
+                                if (inst is ReferenceInstruction) {
+                                    val mRef = inst.reference as? MethodReference ?: continue
+                                    if (mRef.name == "checkServerTrusted" || mRef.name == "checkClientTrusted") return true
+                                    if (depth < 2 && mRef.definingClass == m.definingClass) {
+                                        val targetMethod = classDef.methods.firstOrNull {
+                                            it.name == mRef.name && it.parameters.map { p -> p.type } == mRef.parameterTypes
+                                        }
+                                        if (targetMethod != null && canThrowOrValidate(targetMethod, depth + 1, visited)) {
+                                            return true
+                                        }
+                                    }
+                                }
+                            }
+                            return false
                         }
-                        if (delegates) continue
 
-                        // If empty method (e.g. only return-void, 1 instruction), or no throw / validation
-                        val hasThrow = instructions.any { it.opcode == Opcode.THROW }
-                        val isTrivialReturn = instructions.size <= 2 && instructions.any { it.opcode == Opcode.RETURN_VOID }
+                        val visited = mutableSetOf<String>()
+                        val isSafe = canThrowOrValidate(method, 0, visited)
 
-                        if (isTrivialReturn || !hasThrow) {
+                        if (!isSafe) {
                             findings.add(
                                 Finding(
                                     id = id,
@@ -173,6 +188,7 @@ class InsecureTrustManagerRule : Rule {
                                     component = className,
                                     targetClass = className,
                                     targetMethod = method.name,
+                                    methodDescriptor = descriptor,
                                     evidence = "checkServerTrusted in $className has ${instructions.size} instructions and throws no CertificateException",
                                     lineOrOffset = null
                                 )
@@ -276,6 +292,23 @@ class CleartextTrafficRule : Rule {
     override val name = "Insecure Cleartext HTTP Communication"
     override val description = "Application contains plaintext http:// endpoints while network security configuration or manifest settings permit cleartext traffic."
 
+    private val skipHosts = setOf(
+        "localhost", "127.0.0.1", "example.com", "www.example.com",
+        "schemas.android.com", "w3.org", "www.w3.org", "apache.org",
+        "ns.adobe.com", "purl.org"
+    )
+
+    private fun extractHost(url: String): String? {
+        val withoutScheme = url.removePrefix("http://")
+        val hostPart = withoutScheme.substringBefore('/').substringBefore(':').substringBefore('?')
+        return hostPart.lowercase().takeIf { it.isNotEmpty() }
+    }
+
+    private fun isSkippedHost(host: String): Boolean {
+        if (host in skipHosts) return true
+        return skipHosts.any { host.endsWith(".$it") }
+    }
+
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
         val netConfig = context.attackSurface.networkSecurityConfig
@@ -285,34 +318,60 @@ class CleartextTrafficRule : Rule {
                 (netConfig?.baseCleartextPermitted ?: (context.attackSurface.targetSdk < 28))
         if (!permitsCleartext) return emptyList()
 
-        val httpLiterals = context.dexIndex.findStringLiterals { str ->
-            str.startsWith("http://") &&
-                    !str.contains("localhost") &&
-                    !str.contains("127.0.0.1") &&
-                    !str.contains("schemas.android.com") &&
-                    !str.contains("w3.org") &&
-                    !str.contains("apache.org")
-        }
-
-        // Group by URL to avoid spamming findings
-        val distinctUrls = httpLiterals.groupBy { it.string }
-
-        for ((url, occurrences) in distinctUrls.entries.take(10)) {
-            val firstOcc = occurrences.first()
+        // If manifest explicitly sets usesCleartextTraffic="true" or NSC base config permits cleartext,
+        // emit one dedicated finding for the configuration flag.
+        if (context.attackSurface.usesCleartextTraffic == true || netConfig?.baseCleartextPermitted == true) {
+            val configEvidence = if (context.attackSurface.usesCleartextTraffic == true) {
+                "Manifest android:usesCleartextTraffic=\"true\" explicitly set"
+            } else {
+                "Network Security Config base-config allows cleartext traffic"
+            }
             findings.add(
                 Finding(
                     id = id,
-                    title = "Cleartext HTTP URL in Application Bytecode",
+                    title = "Cleartext HTTP Traffic Permitted by Configuration",
+                    severity = Severity.HIGH,
+                    confidence = Confidence.CERTAIN,
+                    cwe = "CWE-319",
+                    owasp = "M2: Insecure Communication",
+                    description = "Application configuration ($configEvidence) explicitly permits unencrypted cleartext HTTP communication on targetSdk ${context.attackSurface.targetSdk}.",
+                    remediation = "Disable cleartext HTTP traffic in AndroidManifest.xml (`android:usesCleartextTraffic=\"false\"`) and enforce HTTPS in network_security_config.xml.",
+                    component = context.attackSurface.packageName,
+                    targetClass = context.attackSurface.packageName,
+                    targetMethod = null,
+                    evidence = configEvidence,
+                    lineOrOffset = null
+                )
+            )
+        }
+
+        val httpLiterals = context.dexIndex.findStringLiterals { str ->
+            if (!str.startsWith("http://")) return@findStringLiterals false
+            if (str.startsWith("http://javax.xml.XMLConstants/")) return@findStringLiterals false
+            val host = extractHost(str) ?: return@findStringLiterals false
+            !isSkippedHost(host)
+        }
+
+        // Group by host rather than full URL to avoid URL spam and prevent endpoint crowding
+        val hostGroups = httpLiterals.groupBy { extractHost(it.string) ?: "unknown" }
+
+        for ((host, occurrences) in hostGroups) {
+            val firstOcc = occurrences.first()
+            val exampleUrls = occurrences.map { it.string }.distinct().take(3).joinToString(", ")
+            findings.add(
+                Finding(
+                    id = id,
+                    title = "Cleartext HTTP Host in Application Bytecode",
                     severity = Severity.MEDIUM,
                     confidence = Confidence.FIRM,
                     cwe = "CWE-319",
                     owasp = "M2: Insecure Communication",
-                    description = "Cleartext URL '$url' is queried in '${firstOcc.callerClass}#${firstOcc.callerMethod}' while cleartext traffic is permitted (targetSdk=${context.attackSurface.targetSdk}). Plaintext HTTP exposes credentials and traffic to eavesdropping.",
-                    remediation = "Migrate all HTTP endpoints to HTTPS and ensure `android:usesCleartextTraffic=\"false\"` is set.",
+                    description = "Cleartext HTTP host '$host' is queried in '${firstOcc.callerClass}#${firstOcc.callerMethod}' while cleartext traffic is permitted (targetSdk=${context.attackSurface.targetSdk}). Plaintext HTTP exposes traffic to eavesdropping.",
+                    remediation = "Migrate all HTTP endpoints on '$host' to HTTPS and ensure `android:usesCleartextTraffic=\"false\"` is set.",
                     component = firstOcc.callerClass,
                     targetClass = firstOcc.callerClass,
                     targetMethod = firstOcc.callerMethod,
-                    evidence = "Hardcoded HTTP string: $url (${occurrences.size} occurrences)",
+                    evidence = "Hardcoded cleartext host '$host' (${occurrences.size} occurrences). Examples: $exampleUrls",
                     lineOrOffset = null
                 )
             )
