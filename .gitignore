@@ -10,4 +10,5 @@ out/
 .DS_Store
 *.log
 *.sarif
+release-assets/
 
