@@ -1,0 +1,45 @@
+name: Bug / False Positive Report
+description: Report a bug, crash, or false positive detection
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve APKwarden! Please provide reproduction details below.
+  - type: dropdown
+    id: issue_type
+    attributes:
+      label: Issue Type
+      options:
+        - False Positive (Safe code flagged as vulnerable)
+        - False Negative (Vulnerability was missed)
+        - Parser / Execution Crash
+        - Attack Surface Diffing Anomaly
+        - SARIF Schema / GitHub Code Scanning Error
+    validations:
+      required: true
+  - type: input
+    id: apkwarden_version
+    attributes:
+      label: APKwarden Version
+      placeholder: e.g. 0.1.0 (or commit hash)
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction_steps
+    attributes:
+      label: Steps to Reproduce & CLI Command
+      placeholder: |
+        apkwarden scan app.apk --sarif results.sarif
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected vs Actual Behavior
+      placeholder: |
+        Expected: Finding suppressed because Intent is sanitized with setPackage().
+        Actual: Flagged as APK-SEC-001 (CRITICAL).
+    validations:
+      required: true

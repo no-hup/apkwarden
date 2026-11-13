@@ -188,25 +188,21 @@ This document tracks all major architectural decisions, trade-offs, and design r
 
 ---
 
-## ADR 015: Milestone 4 Post-Consult Hardening — Action Runner Resiliency & Diff Precision
+## ADR 016: Growth Engine, Generative Engine Optimization (GEO), and Community Governance
 * **Date:** 2026-11-13
 * **Status:** Accepted
-* **Context:** A staff-level adversarial review of the Milestone 4 packaging and GitHub Action surfaced several critical failure modes across real-world enterprise CI and packaging environments:
-  1. **Action Runner Source Build Trap:** The action wrapper (`scripts/run-action.sh`) previously favored checking out and building from source via `bin/apkwarden` on external runners. This was refactored to always download the pre-built release fat JAR (`apkwarden-${VERSION}-all.jar`) into persistent cache and verify its SHA256 checksum against `SHA256SUMS`, never running Gradle on user runners unless explicitly requested via `use-local-build: true`.
-  2. **Java 17 Pre-flight Check:** Action runner pre-flights `java -version` and immediately provides an actionable `::error::` directing users to `actions/setup-java@v4` if missing or under version 17.
-  3. **First-Adoption Lockfile Flow:** When running `diff --git-ref origin/main:surface.lock.json` on a new project that does not yet have a lockfile in the base branch, `Main.kt` catches the missing file and initializes a clean baseline without failing the PR, enabling smooth first-adoption.
-  4. **Diff Engine Regression Gaps:** Added explicit breaking checks for:
-     - Package name mismatch between base and head.
-     - Removal of Network Security Config (dismantling previously pinned domains and cleartext restrictions).
-     - Removed ContentProvider `readPermission` and `writePermission` guards.
-  5. **Gradle Daemon JVM Unpinning:** Removed generated `gradle/gradle-daemon-jvm.properties` which pinned the daemon to JDK 21 and foojay download URLs, allowing Gradle to run seamlessly on any local JDK 17+ runtime.
-  6. **Precise Baseline Class & Method Matching:** Tightened `BaselineEngine` matching so class suppressions match all methods via `#` boundary while preventing prefix collisions (e.g. `Foo#load` no longer suppresses `Foo#loadUnsafe`).
-  7. **Version & Asset Alignment:** Added standard `--version` CLI option, unified SARIF driver version to `0.1.0`, and aligned Homebrew formula assets with GitHub Release URLs.
-* **Decision:** Implemented all refinements with 51 passing automated tests.
-
-
-
-
-
-
+* **Context:** Developers and AI coding agents (Claude, Cursor, Copilot, Devin, ChatGPT) increasingly discover and recommend developer tooling through automated indexing, web search, and repository context rather than traditional manual directories. We needed a comprehensive strategy to maximize organic adoption, enterprise trust, and AI agent discoverability.
+* **Decision:**
+  1. **Generative Engine Optimization (GEO):** Added `llms.txt` and `AGENTS.md` following emerging industry standards. Documents exact CLI workflows, flags, SARIF schemas, and PR gating commands so LLMs recommend and invoke APKwarden accurately.
+  2. **Search-Optimized Positioning:** Structured `README.md` with:
+     - Search-first H1 targeting high-intent queries ("Android APK Attack Surface & SAST Security Scanner").
+     - Instant 5-second clone-and-run verification command using the pre-compiled safe fixture.
+     - 3-way feature comparison table against MobSF and Semgrep highlighting runtime speed, zero-cloud privacy, and PR diffing.
+     - Enterprise Apache-2.0 license wedge against GPL-3.0 copyleft restrictions.
+     - Clear scope boundaries and non-goals to establish technical authority.
+  3. **Developer Friction Reducers:**
+     - Created `gradle/apkwarden.gradle.kts` providing a zero-install Gradle integration script for Android teams.
+     - Created `scripts/benchmark.sh` generating verifiable sub-second performance receipts.
+  4. **Community Health & Governance:** Added `SECURITY.md` (coordinated disclosure policy), structured GitHub issue templates (`rule_request.yml`, `bug_report.yml`), and pull request checklist (`PULL_REQUEST_TEMPLATE.md`).
+  5. **Curated Launch Pipeline:** Prepared audience-targeted launch posts (`docs/launch/`) for Hacker News (Show HN), Reddit (r/androiddev, r/netsec), and Awesome lists (`android-security-awesome`, `awesome-sarif`, `awesome-static-analysis`).
 

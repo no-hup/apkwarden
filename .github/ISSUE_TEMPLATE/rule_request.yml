@@ -1,0 +1,51 @@
+name: Rule Request
+description: Propose a new Android AppSec rule for APKwarden
+title: "[Rule Request]: "
+labels: ["enhancement", "rules"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a new security rule for APKwarden!
+        We prioritize high-precision rules with low false-positive rates that can be evaluated on compiled Dalvik bytecode.
+  - type: input
+    id: vulnerability_name
+    attributes:
+      label: Vulnerability Name
+      placeholder: e.g. Insecure Biometric Prompt Cryptographic Object Handling
+    validations:
+      required: true
+  - type: input
+    id: cwe_owasp
+    attributes:
+      label: CWE / OWASP MASVS Mapping
+      placeholder: e.g. CWE-287 / MASVS-AUTH-1
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Proposed Severity
+      options:
+        - CRITICAL
+        - HIGH
+        - MEDIUM
+        - LOW
+    validations:
+      required: true
+  - type: textarea
+    id: bytecode_sinks
+    attributes:
+      label: Target Framework Sinks / Bytecode Invocations
+      description: What specific Dalvik method calls, descriptors, or XML tags indicate this vulnerability?
+      placeholder: |
+        e.g. Invocation of androidx.biometric.BiometricPrompt->authenticate with null CryptoObject
+    validations:
+      required: true
+  - type: textarea
+    id: false_positive_guards
+    attributes:
+      label: How to prevent False Positives?
+      description: What checks or sanitizers indicate safe usage? Should this rule be gated by exported component reachability?
+    validations:
+      required: true
