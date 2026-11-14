@@ -361,7 +361,10 @@ def generate_draft(repo_name: str, app_name: str, maintainer: Dict[str, Any], en
     build_task = enrich.get("build_task") or "./gradlew assembleRelease"
     pkg = enrich.get("package_id") or app_name
 
-    one_true_sentence = f"Your release workflow `{wf_path}` already builds release APKs (via `{build_task}`), but currently has no automated security or permission check step."
+    if enrich.get("release_workflow"):
+        context_sentence = f"noticed in your release workflow (`{wf_path}`) that you run `{build_task}`, but don't run any automated security or permission checks on the output APK right now."
+    else:
+        context_sentence = f"noticed you actively maintain release builds for {app_name}, but don't have an automated security check step in CI yet."
 
     draft = f"""# Outreach Draft for {repo_name}
 
@@ -373,26 +376,22 @@ def generate_draft(repo_name: str, app_name: str, maintainer: Dict[str, Any], en
 
 ---
 
-### Email Draft (Consent-First)
+### Plain-Text Email Draft (Non-AI Register, Anti-Spam Safe)
 
-**Subject**: {app_name} release CI & APKwarden
+**Subject**: quick note on {app_name}'s release CI
 
-Hi {first_name},
+Hey {first_name},
 
-I maintain APKwarden, an open-source, zero-configuration bytecode and security scanner designed specifically for Android CI/CD pipelines.
+Came across {app_name} while looking through active Android repos that ship releases.
 
-{one_true_sentence}
+I {context_sentence}
 
-APKwarden runs in ~5 seconds directly on release APKs, catching reachable vulnerabilities, risky permissions (like tapjacking overlays), and cleartext traffic with zero library noise.
+I've been building a small open-source CLI tool called apkwarden (github.com/no-hup/apkwarden) that scans release APKs directly in CI. Main thing is it's built to stay quiet unless something's actually real (like exported WebViews with file access, cleartext HTTP flags, or tapjacking permissions), so it doesn't spam you with hundreds of AndroidX false positives.
 
-If you are interested, reply "send it" and I'll run APKwarden headlessly on your latest public release APK and send you the 1-page review. If it is noisy or unhelpful, I would love your honest critique as well.
+If you're curious, reply with a quick "yes" and I can run it on your public APK and email over the 1-page summary to see if it's actually useful for your pipeline. If not or if it looks noisy, no worries at all—won't email you again.
 
-Either way, no follow-up beyond this single note.
-
-Best regards,
-
-Shaurya  
-APKwarden Maintainer  
+Cheers,
+Shaurya
 https://github.com/no-hup/apkwarden
 """
     return draft
