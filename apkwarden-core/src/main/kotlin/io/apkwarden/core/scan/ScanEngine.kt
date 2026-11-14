@@ -14,15 +14,6 @@ class ScanEngine(
     private val extraFirstPartyPrefixes: Set<String> = emptySet()
 ) {
 
-    private val knownLibraryPrefixes = listOf(
-        "android.", "androidx.", "com.google.", "com.android.",
-        "io.grpc.", "com.facebook.", "com.appsflyer.", "com.adjust.",
-        "io.sentry.", "com.bytedance.", "com.mbridge.", "com.applovin.",
-        "com.unity3d.", "com.ironsource.", "com.vungle.", "com.inmobi.",
-        "com.flurry.", "com.crashlytics.", "io.reactivex.", "kotlin.",
-        "kotlinx.", "okhttp3.", "okio.", "retrofit2.", "org.apache."
-    )
-
     private data class FindingDedupKey(
         val id: String,
         val targetClass: String?,
@@ -65,7 +56,7 @@ class ScanEngine(
             )
         }.map { finding ->
             // Attribute ownership
-            val owner = classifyOwner(finding.targetClass, appPackage, extraFirstPartyPrefixes)
+            val owner = classifyOwner(finding.targetClass, finding.component, appPackage, extraFirstPartyPrefixes)
             finding.copy(owner = owner)
         }
 
@@ -77,8 +68,15 @@ class ScanEngine(
         val infoCount = dedupedFindings.count { it.severity == Severity.INFO }
 
         val overallScore = computeScore(dedupedFindings)
-        val firstPartyScore = computeScore(dedupedFindings.filter { it.owner == FindingOwner.FIRST_PARTY || it.owner == FindingOwner.UNKNOWN })
+        val firstPartyScore = computeScore(dedupedFindings.filter { it.owner == FindingOwner.FIRST_PARTY })
         val libraryScore = computeScore(dedupedFindings.filter { it.owner == FindingOwner.LIBRARY })
+        val unclassifiedScore = computeScore(dedupedFindings.filter { it.owner == FindingOwner.UNKNOWN })
+
+        val reviewQueueCount = dedupedFindings.count {
+            it.owner == FindingOwner.FIRST_PARTY &&
+                    (it.confidence == Confidence.CERTAIN || it.confidence == Confidence.FIRM) &&
+                    (it.reachability == Reachability.DIRECT || it.reachability == Reachability.REACHABLE || it.targetMethod == null)
+        }
 
         // Warnings collection from unified analysis and dex indexing
         val scanWarnings = mutableListOf<String>()
@@ -98,7 +96,9 @@ class ScanEngine(
             infoCount = infoCount,
             securityScore = overallScore,
             firstPartyScore = firstPartyScore,
-            libraryScore = libraryScore
+            libraryScore = libraryScore,
+            unclassifiedScore = unclassifiedScore,
+            reviewQueueCount = reviewQueueCount
         )
 
         return ScanReport(
@@ -112,12 +112,12 @@ class ScanEngine(
         )
     }
 
-    private fun classifyOwner(targetClass: String?, appPackage: String, extraPrefixes: Set<String>): FindingOwner {
-        if (targetClass == null) return FindingOwner.UNKNOWN
-        val norm = targetClass.removePrefix("L").replace('/', '.').removeSuffix(";")
+    private fun classifyOwner(targetClass: String?, component: String?, appPackage: String, extraPrefixes: Set<String>): FindingOwner {
+        val target = targetClass ?: component ?: return FindingOwner.UNKNOWN
+        val norm = target.removePrefix("L").replace('/', '.').removeSuffix(";")
         if (appPackage.isNotEmpty() && norm.startsWith(appPackage)) return FindingOwner.FIRST_PARTY
         if (extraPrefixes.any { norm.startsWith(it) }) return FindingOwner.FIRST_PARTY
-        if (knownLibraryPrefixes.any { norm.startsWith(it) }) return FindingOwner.LIBRARY
+        if (KnownLibraries.PREFIXES.any { norm.startsWith(it) }) return FindingOwner.LIBRARY
         return FindingOwner.UNKNOWN
     }
 

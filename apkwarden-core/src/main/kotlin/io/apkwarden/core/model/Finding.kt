@@ -65,7 +65,9 @@ data class ScanSummary(
     val infoCount: Int,
     val securityScore: Int,
     val firstPartyScore: Int = securityScore,
-    val libraryScore: Int = securityScore
+    val libraryScore: Int = securityScore,
+    val unclassifiedScore: Int = securityScore,
+    val reviewQueueCount: Int = 0
 )
 
 @Serializable

@@ -9,6 +9,7 @@ import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.dex.TaintSource
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.KnownLibraries
 import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 
@@ -22,19 +23,7 @@ class IntentRedirectionRule : Rule {
     override val description = "Exported component receives an Intent and forwards it to startActivity, startService, or sendBroadcast without validating the destination component or package."
     override val targetSinks = setOf("startActivity", "startActivityForResult", "startService", "sendBroadcast")
 
-    private val knownLibraryPrefixes = listOf(
-        "android.", "androidx.", "com.google.", "com.android.",
-        "io.grpc.", "com.facebook.", "com.appsflyer.", "com.adjust.",
-        "io.sentry.", "com.bytedance.", "com.mbridge.", "com.applovin.",
-        "com.unity3d.", "com.ironsource.", "com.vungle.", "com.inmobi.",
-        "com.flurry.", "com.crashlytics.", "io.reactivex.", "kotlin.",
-        "kotlinx.", "okhttp3.", "okio.", "retrofit2.", "org.apache."
-    )
-
-    private fun isAppClass(className: String): Boolean {
-        val norm = className.removePrefix("L").replace('/', '.').removeSuffix(";")
-        return knownLibraryPrefixes.none { norm.startsWith(it) }
-    }
+    private fun isAppClass(className: String): Boolean = !KnownLibraries.isLibraryClass(className)
 
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
@@ -194,6 +183,7 @@ class MutablePendingIntentRule : Rule {
         val flagMutable = 0x02000000
 
         for (cs in pendingIntentCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val args = analyzer.getInvocationArgs(cs.instruction)
             // static method getActivity(context, requestCode, intent, flags) -> args[3] is flags
@@ -248,7 +238,8 @@ class MutablePendingIntentRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = detail,
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -274,6 +265,7 @@ class ImplicitPendingIntentRule : Rule {
                 context.dexIndex.findCallSites("android.app.PendingIntent", "getService")
 
         for (cs in pendingIntentCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val args = analyzer.getInvocationArgs(cs.instruction)
             if (args.size < 3) continue
@@ -309,7 +301,8 @@ class ImplicitPendingIntentRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "Method lacks setPackage/setComponent calls before PendingIntent.${cs.targetMethod}",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -336,6 +329,7 @@ class DynamicReceiverExportRule : Rule {
                 context.dexIndex.findCallSites("android.content.ContextWrapper", "registerReceiver")
 
         for (cs in registerCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val args = analyzer.getInvocationArgs(cs.instruction)
             // Two-parameter version registerReceiver(receiver, filter) has no export flag (args.size == 3 including 'this')
@@ -362,7 +356,8 @@ class DynamicReceiverExportRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "Call to registerReceiver with ${args.size - 1} parameters (missing export flags)",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -415,7 +410,8 @@ class DeepLinkHostValidationRule : Rule {
                             targetMethod = method.name,
                             methodDescriptor = analyzer.getMethodDescriptor(),
                             evidence = "Method calls Uri.getHost() and weak substring matching (${if (hasWeakContains) "contains" else "endsWith"})",
-                            lineOrOffset = null
+                            lineOrOffset = null,
+                            reachability = Reachability.DIRECT
                         )
                     )
                 }
@@ -459,8 +455,8 @@ class OverprivilegedPermissionsRule : Rule {
                         owasp = "M4: Insufficient Input/Output Validation",
                         description = "Application requests '${req.name}': $riskDesc.",
                         remediation = "Evaluate whether this sensitive permission is strictly necessary for core functionality. Remove if unused.",
-                        component = null,
-                        targetClass = null,
+                        component = context.attackSurface.packageName,
+                        targetClass = context.attackSurface.packageName,
                         targetMethod = null,
                         evidence = "<uses-permission android:name=\"${req.name}\"/>",
                         lineOrOffset = null

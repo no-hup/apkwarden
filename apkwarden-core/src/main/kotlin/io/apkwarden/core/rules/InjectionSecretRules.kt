@@ -5,6 +5,7 @@ import io.apkwarden.core.dex.MethodAnalyzer
 import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 import kotlin.math.ln
 
@@ -23,6 +24,7 @@ class SqlInjectionRule : Rule {
                 context.dexIndex.findCallSites("android.database.sqlite.SQLiteDatabase", "execSQL")
 
         for (cs in sqlCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val descriptor = analyzer.getMethodDescriptor()
             val args = analyzer.getInvocationArgs(cs.instruction)
@@ -99,7 +101,8 @@ class SqlInjectionRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = descriptor,
                         evidence = "Call to SQLiteDatabase.${cs.targetMethod} preceded by StringBuilder/String concatenation in ${cs.callerClass}",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }

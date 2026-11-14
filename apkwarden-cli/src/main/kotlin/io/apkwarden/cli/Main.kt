@@ -18,6 +18,8 @@ import io.apkwarden.core.diff.DiffSeverity
 import io.apkwarden.core.diff.SurfaceDiffEngine
 import io.apkwarden.core.diff.SurfaceDiffResult
 import io.apkwarden.core.lock.SurfaceLockGenerator
+import io.apkwarden.core.model.Confidence
+import io.apkwarden.core.model.Finding
 import io.apkwarden.core.model.FindingOwner
 import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.ScanReport
@@ -374,26 +376,69 @@ class ScanCommand : CliktCommand(name = "scan") {
             }
         }
 
+        val activeFindings = report.findings.filter { !it.isSuppressed }
+        val suppressedCount = report.findings.count { it.isSuppressed }
+
+        // Partition findings for human review & gating
+        // 1. Actionable Review Queue: First-party, FIRM/CERTAIN confidence, and REACHABLE or manifest declaration
+        val reviewQueue = activeFindings.filter {
+            it.owner == FindingOwner.FIRST_PARTY &&
+                    (it.confidence == Confidence.CERTAIN || it.confidence == Confidence.FIRM) &&
+                    (it.reachability == Reachability.DIRECT || it.reachability == Reachability.REACHABLE || it.targetMethod == null)
+        }
+
+        // 2. Critical Dependency & Runtime Hooks: Any CRITICAL outside first-party app code
+        val criticalDependencies = activeFindings.filter {
+            it.severity == Severity.CRITICAL && it.owner != FindingOwner.FIRST_PARTY
+        }.distinctBy { Pair(it.id, it.targetClass) }
+
+        // 3. App Code - Unproven Paths: First-party findings not on review queue (UNKNOWN/UNREACHABLE reachability or TENTATIVE)
+        val unprovenAppFindings = activeFindings.filter {
+            it.owner == FindingOwner.FIRST_PARTY && !reviewQueue.contains(it)
+        }
+
+        // 4. Third-Party Library Aggregates: Non-critical library findings
+        val libraryFindings = activeFindings.filter {
+            it.owner == FindingOwner.LIBRARY && it.severity != Severity.CRITICAL
+        }
+
+        // 5. Unclassified Packages: Non-critical unclassified findings
+        val unclassifiedFindings = activeFindings.filter {
+            it.owner == FindingOwner.UNKNOWN && it.severity != Severity.CRITICAL
+        }
+
         if (jsonOutput) {
             echo(json.encodeToString(report))
         } else {
             val summary = report.summary
             val surface = report.attackSurface
             val fp = report.stackFingerprint
-            val activeFindings = report.findings.filter { !it.isSuppressed }
-            val suppressedCount = report.findings.count { it.isSuppressed }
+
+            val effectivePrefixes = (listOf(surface.packageName) + firstPartyPrefixes).distinct()
+            val appScopeStr = effectivePrefixes.joinToString(", ") { "$it.*" }
+
+            val verdictStr = when {
+                reviewQueue.isEmpty() && criticalDependencies.isEmpty() ->
+                    "✅ CLEAN: 0 actionable risks in application code. All dependency code within policy."
+                reviewQueue.isNotEmpty() && criticalDependencies.isNotEmpty() ->
+                    "🚨 ACTION REQUIRED: ${reviewQueue.size} actionable app issue(s), ${criticalDependencies.size} critical dependency hook(s)."
+                reviewQueue.isNotEmpty() ->
+                    "🚨 ACTION REQUIRED: ${reviewQueue.size} actionable issue(s) detected in application code."
+                else ->
+                    "🚨 DEPENDENCY ALERT: ${criticalDependencies.size} critical vulnerability(ies) in bundled libraries/runtime."
+            }
 
             echo("")
             echo("══════════════════════════════════════════════════════════════════════")
-            echo("                      APKWarden Security Report                       ")
+            echo("                      APKWarden Security Review                       ")
             echo("══════════════════════════════════════════════════════════════════════")
             echo("Target:          ${report.apkName}")
             echo("Package:         ${surface.packageName}")
             echo("SDK Target:      minSdk=${surface.minSdk}, targetSdk=${surface.targetSdk}")
             echo("Primary Stack:   ${fp.primaryStack}")
-            echo("Security Score:  ${summary.securityScore}/100 (First-Party App: ${summary.firstPartyScore}/100 | Third-Party Libs: ${summary.libraryScore}/100)")
-            val suppStr = if (suppressedCount > 0) " | SUPPRESSED: $suppressedCount" else ""
-            echo("Findings:        CRITICAL: ${summary.criticalCount} | HIGH: ${summary.highCount} | MEDIUM: ${summary.mediumCount} | LOW: ${summary.lowCount} | INFO: ${summary.infoCount}$suppStr")
+            echo("App Scope:       $appScopeStr")
+            echo("Scorecard:       App: ${summary.firstPartyScore}/100 | Libs: ${summary.libraryScore}/100 | Unclassified: ${summary.unclassifiedScore}/100")
+            echo("Verdict:         $verdictStr")
             echo("──────────────────────────────────────────────────────────────────────")
 
             if (report.scanWarnings.isNotEmpty()) {
@@ -402,79 +447,141 @@ class ScanCommand : CliktCommand(name = "scan") {
                 report.scanWarnings.forEach { echo("• $it") }
             }
 
-            if (activeFindings.isEmpty()) {
-                echo("")
-                if (suppressedCount > 0) {
-                    echo("✓ Zero active vulnerabilities ($suppressedCount grandfathered findings suppressed by baseline).")
-                } else if (report.scanWarnings.any { it.contains("PACKER") || it.contains("Failed to parse") }) {
-                    echo("⚠️  No static findings detected in available DEX bytecode, but note scan warnings/blind spots above.")
-                } else {
-                    echo("✓ No active findings detected across 21 AppSec rules.")
-                }
+            // Section 1: Actionable Review Queue
+            echo("")
+            echo("🚨 ACTIONABLE REVIEW QUEUE (${reviewQueue.size} items)")
+            echo("──────────────────────────────────────────────────────────────────────")
+            if (reviewQueue.isEmpty()) {
+                echo("✓ Zero high-confidence reachable vulnerabilities detected in application code.")
             } else {
-                var currentSeverity: Severity? = null
-                for (finding in report.findings) {
-                    if (finding.isSuppressed) continue
-
-                    if (finding.severity != currentSeverity) {
-                        currentSeverity = finding.severity
-                        val badge = when (currentSeverity) {
-                            Severity.CRITICAL -> "🔴 [CRITICAL]"
-                            Severity.HIGH -> "🟠 [HIGH]"
-                            Severity.MEDIUM -> "🟡 [MEDIUM]"
-                            Severity.LOW -> "🔵 [LOW]"
-                            Severity.INFO -> "⚪ [INFO]"
-                        }
-                        echo("")
-                        echo("=== $badge FINDINGS ===")
+                for (f in reviewQueue) {
+                    val badge = when (f.severity) {
+                        Severity.CRITICAL -> "🔴 [CRITICAL]"
+                        Severity.HIGH -> "🟠 [HIGH]"
+                        Severity.MEDIUM -> "🟡 [MEDIUM]"
+                        Severity.LOW -> "🔵 [LOW]"
+                        Severity.INFO -> "⚪ [INFO]"
+                    }
+                    val reachStr = when (f.reachability) {
+                        Reachability.DIRECT -> "Direct Exported Entry"
+                        Reachability.REACHABLE -> "Reachable from Exported Component"
+                        Reachability.UNKNOWN -> "Manifest Declaration"
+                        Reachability.UNREACHABLE -> "Internal Component"
+                    }
+                    val locStr = when {
+                        f.targetMethod != null -> "${f.targetClass}#${f.targetMethod}${f.methodDescriptor ?: ""}"
+                        f.component != null -> f.component
+                        else -> surface.packageName
                     }
 
-                    val ownerBadge = when (finding.owner) {
-                        FindingOwner.FIRST_PARTY -> "[FIRST-PARTY]"
-                        FindingOwner.LIBRARY -> "[LIBRARY]"
-                        FindingOwner.UNKNOWN -> "[UNKNOWN-OWNER]"
+                    echo("• [${f.id}] ${f.title} ($badge / ${f.confidence})")
+                    echo("  Location:     $locStr")
+                    echo("  Reachability: $reachStr")
+                    if (f.evidence != null) {
+                        echo("  Evidence:     ${f.evidence}")
                     }
-
-                    val reachabilityBadge = when (finding.reachability) {
-                        Reachability.DIRECT -> "[DIRECT]"
-                        Reachability.REACHABLE -> "[REACHABLE]"
-                        Reachability.UNKNOWN -> "[UNKNOWN/INDIRECT]"
-                        Reachability.UNREACHABLE -> "[UNREACHABLE]"
-                    }
-
-                    echo("• [${finding.id}] ${finding.title} ($ownerBadge $reachabilityBadge ${finding.cwe} / ${finding.owasp})")
-                    echo("  Confidence:   ${finding.confidence}")
-                    if (finding.component != null) {
-                        echo("  Component:    ${finding.component}")
-                    }
-                    if (finding.targetMethod != null) {
-                        val methodDesc = if (finding.methodDescriptor != null) finding.methodDescriptor else ""
-                        echo("  Method:       ${finding.targetClass}#${finding.targetMethod}$methodDesc")
-                    }
-                    if (finding.evidence != null) {
-                        echo("  Evidence:     ${finding.evidence}")
-                    }
-                    val snippet = finding.codeSnippet
-                    if (snippet != null) {
-                        echo("  Bytecode Snippet:")
-                        snippet.lines().forEach { line ->
-                            echo("    $line")
-                        }
-                    }
-                    echo("  Description:  ${finding.description}")
-                    echo("  Remediation:  ${finding.remediation}")
+                    echo("  Impact:       ${f.description}")
+                    echo("  Remediation:  ${f.remediation}")
                     echo("")
                 }
+            }
 
-                if (suppressedCount > 0) {
-                    echo("ℹ️  Note: $suppressedCount grandfathered finding(s) suppressed via baseline.")
+            // Section 2: Critical Dependency & Runtime Hooks
+            echo("")
+            echo("🚨 CRITICAL DEPENDENCY & RUNTIME HOOKS (${criticalDependencies.size} items)")
+            echo("──────────────────────────────────────────────────────────────────────")
+            if (criticalDependencies.isEmpty()) {
+                echo("✓ Zero critical vulnerabilities detected in bundled libraries or runtime bridges.")
+            } else {
+                for (f in criticalDependencies) {
+                    val ownerTag = if (f.owner == FindingOwner.LIBRARY) "LIBRARY" else "UNCLASSIFIED"
+                    val locStr = f.targetClass?.let { "$it#${f.targetMethod ?: ""}" } ?: f.component ?: "N/A"
+                    echo("• [${f.id}] ${f.title} (🔴 [CRITICAL] / [$ownerTag])")
+                    echo("  Location:     $locStr")
+                    if (f.evidence != null) {
+                        echo("  Evidence:     ${f.evidence}")
+                    }
+                    echo("  Impact:       ${f.description}")
+                    echo("  Remediation:  ${f.remediation}")
+                    echo("")
                 }
+            }
+
+            // Section 3: App Code - Unproven Paths
+            echo("")
+            echo("⚠️  APP CODE — UNPROVEN PATHS (${unprovenAppFindings.size} items)")
+            echo("──────────────────────────────────────────────────────────────────────")
+            if (unprovenAppFindings.isEmpty()) {
+                echo("✓ Zero indirect or unproven sinks in first-party packages.")
+            } else {
+                echo("The following sinks exist in application code but static entry-point reachability is unproven:")
+                for (f in unprovenAppFindings) {
+                    val badge = when (f.severity) {
+                        Severity.CRITICAL -> "🔴"
+                        Severity.HIGH -> "🟠"
+                        Severity.MEDIUM -> "🟡"
+                        Severity.LOW -> "🔵"
+                        Severity.INFO -> "⚪"
+                    }
+                    val locStr = "${f.targetClass}#${f.targetMethod ?: ""}"
+                    echo("  $badge [${f.id}] ${f.title} ($locStr) [${f.confidence}]")
+                }
+            }
+
+            // Section 4: Third-Party Library Aggregates (Appendix)
+            echo("")
+            echo("📦 THIRD-PARTY LIBRARY AGGREGATES (Appendix: ${libraryFindings.size} items)")
+            echo("──────────────────────────────────────────────────────────────────────")
+            if (libraryFindings.isEmpty()) {
+                echo("✓ Zero library findings detected.")
+            } else {
+                val libGroups = libraryFindings.groupBy { Triple(it.id, it.title, it.severity) }
+                for ((key, items) in libGroups) {
+                    val (id, title, severity) = key
+                    val badge = when (severity) {
+                        Severity.CRITICAL -> "🔴"
+                        Severity.HIGH -> "🟠"
+                        Severity.MEDIUM -> "🟡"
+                        Severity.LOW -> "🔵"
+                        Severity.INFO -> "⚪"
+                    }
+                    val distinctPrefixes = items.mapNotNull { it.targetClass }
+                        .map { it.split('.').take(2).joinToString(".") }
+                        .distinct()
+                        .take(3)
+                        .joinToString(", ") { "$it.*" }
+                    val prefixNote = if (distinctPrefixes.isNotEmpty()) " in $distinctPrefixes" else ""
+                    echo("  $badge [$id] $title: ${items.size} occurrence(s)$prefixNote")
+                }
+                echo("  ℹ️  Detailed library findings preserved in SARIF and --json exports.")
+            }
+
+            // Section 5: Unclassified Packages
+            echo("")
+            echo("ℹ️  UNCLASSIFIED PACKAGES (${unclassifiedFindings.size} items)")
+            echo("──────────────────────────────────────────────────────────────────────")
+            if (unclassifiedFindings.isEmpty()) {
+                echo("✓ Zero unclassified bytecode packages.")
+            } else {
+                val unclassGroups = unclassifiedFindings.groupBy {
+                    it.targetClass?.split('.')?.take(2)?.joinToString(".") ?: "unknown"
+                }
+                for ((prefix, items) in unclassGroups) {
+                    val rules = items.map { it.id }.distinct().joinToString(", ")
+                    echo("  • $prefix.*: ${items.size} finding(s) across [$rules]")
+                }
+                echo("  Tip: Pass --first-party <prefix> if any of these packages belong to your application.")
+            }
+
+            if (suppressedCount > 0) {
+                echo("")
+                echo("ℹ️  Note: $suppressedCount grandfathered finding(s) suppressed via baseline.")
             }
             echo("══════════════════════════════════════════════════════════════════════")
         }
 
         // Write GitHub Action Step Summary if running in GitHub Actions
-        writeGitHubScanSummary(target, report)
+        writeGitHubScanSummary(target, report, reviewQueue, criticalDependencies)
 
         // CI Gating evaluation
         val failSeverity = when (failOn.uppercase()) {
@@ -494,18 +601,39 @@ class ScanCommand : CliktCommand(name = "scan") {
                 throw ProgramResult(2)
             }
             val thresholdOrdinal = failSeverity.ordinal
-            val violations = report.findings.filter { finding ->
-                if (finding.isSuppressed) return@filter false
-                // CRITICAL findings fail regardless of library or first-party ownership
-                if (finding.severity == Severity.CRITICAL) return@filter true
-                val inScope = failOnLibraries || finding.owner == FindingOwner.FIRST_PARTY || finding.owner == FindingOwner.UNKNOWN
-                inScope && finding.severity.ordinal <= thresholdOrdinal
-            }
-            if (violations.isNotEmpty()) {
+
+            // 1. Actionable Review Queue violations at/above threshold
+            val reviewViolations = reviewQueue.filter { it.severity.ordinal <= thresholdOrdinal }
+
+            // 2. Critical Dependency Hooks (CRITICAL is always blocking regardless of threshold)
+            val criticalDepViolations = criticalDependencies
+
+            // 3. Optional library gating if explicitly requested
+            val libraryViolations = if (failOnLibraries) {
+                libraryFindings.filter { it.severity.ordinal <= thresholdOrdinal }
+            } else emptyList()
+
+            val allViolations = reviewViolations + criticalDepViolations + libraryViolations
+            if (allViolations.isNotEmpty()) {
                 if (!jsonOutput) {
-                    echo("❌ CI GATE FAILED: Found ${violations.size} active in-scope finding(s) at or above $failSeverity threshold.")
+                    echo("")
+                    echo("❌ CI GATE FAILED: Found ${allViolations.size} blocking issue(s) at or above $failSeverity threshold.")
+                    if (reviewViolations.isNotEmpty()) {
+                        echo("   • ${reviewViolations.size} violation(s) in Actionable Review Queue")
+                    }
+                    if (criticalDepViolations.isNotEmpty()) {
+                        echo("   • ${criticalDepViolations.size} critical vulnerability(ies) in dependencies/runtime")
+                    }
+                    if (libraryViolations.isNotEmpty()) {
+                        echo("   • ${libraryViolations.size} library violation(s) (--fail-on-libraries enabled)")
+                    }
                 }
                 throw ProgramResult(2)
+            } else {
+                if (!jsonOutput) {
+                    echo("")
+                    echo("✓ CI Gate Passed: 0 blocking violations at or above $failSeverity threshold.")
+                }
             }
         }
     }
@@ -557,58 +685,60 @@ private fun writeGitHubDiffSummary(
 
 private fun writeGitHubScanSummary(
     apkTarget: File,
-    report: ScanReport
+    report: ScanReport,
+    reviewQueue: List<Finding>,
+    criticalDependencies: List<Finding>
 ) {
-    val activeFindings = report.findings.filter { !it.isSuppressed }
-    val crit = activeFindings.count { it.severity == Severity.CRITICAL }
-    val high = activeFindings.count { it.severity == Severity.HIGH }
-    val med = activeFindings.count { it.severity == Severity.MEDIUM }
-    val low = activeFindings.count { it.severity == Severity.LOW }
-
     val sb = StringBuilder()
-    sb.appendLine("## 🛡️ APKwarden Security Report")
+    sb.appendLine("## 🛡️ APKwarden Security Review")
     sb.appendLine()
-    sb.appendLine("| Target | Package | Target SDK | Security Score | Active Findings |")
-    sb.appendLine("| :--- | :--- | :--- | :--- | :--- |")
-    sb.appendLine("| `${apkTarget.name}` | `${report.attackSurface.packageName}` | `${report.attackSurface.targetSdk}` | **${report.summary.securityScore} / 100** (App: ${report.summary.firstPartyScore} \\| Libs: ${report.summary.libraryScore}) | 🔴 $crit Critical \\| 🟠 $high High \\| 🟡 $med Med \\| 🔵 $low Low |")
+    sb.appendLine("| Target | Package | Target SDK | Actionable Queue | Critical Dependencies | App Health Score |")
+    sb.appendLine("| :--- | :--- | :--- | :--- | :--- | :--- |")
+    sb.appendLine("| `${apkTarget.name}` | `${report.attackSurface.packageName}` | `${report.attackSurface.targetSdk}` | **${reviewQueue.size} items** | **${criticalDependencies.size} items** | **${report.summary.firstPartyScore} / 100** |")
     sb.appendLine()
 
-    val topFindings = activeFindings.filter { it.severity == Severity.CRITICAL || it.severity == Severity.HIGH }
-    if (topFindings.isNotEmpty()) {
-        sb.appendLine("### 🚨 High & Critical Vulnerabilities")
+    if (reviewQueue.isNotEmpty()) {
+        sb.appendLine("### 🚨 Actionable Review Queue")
         sb.appendLine()
-        for (f in topFindings) {
-            val badge = if (f.severity == Severity.CRITICAL) "🔴 [CRITICAL]" else "🟠 [HIGH]"
-            val ownerBadge = when (f.owner) {
-                FindingOwner.FIRST_PARTY -> "[FIRST-PARTY]"
-                FindingOwner.LIBRARY -> "[LIBRARY]"
-                FindingOwner.UNKNOWN -> "[UNKNOWN-OWNER]"
+        for (f in reviewQueue) {
+            val badge = when (f.severity) {
+                Severity.CRITICAL -> "🔴 [CRITICAL]"
+                Severity.HIGH -> "🟠 [HIGH]"
+                Severity.MEDIUM -> "🟡 [MEDIUM]"
+                Severity.LOW -> "🔵 [LOW]"
+                Severity.INFO -> "⚪ [INFO]"
             }
             sb.appendLine("<details open>")
-            sb.appendLine("<summary><b>$badge [${f.id}] ${f.title} ($ownerBadge)</b></summary>")
+            sb.appendLine("<summary><b>$badge [${f.id}] ${f.title}</b></summary>")
             sb.appendLine()
-            sb.appendLine("- **Component:** `${f.component ?: "N/A"}`")
-            sb.appendLine("- **Method:** `${f.targetClass ?: ""}#${f.targetMethod ?: ""}`")
-            sb.appendLine("- **Reachability:** `${f.reachability}` | **CWE:** ${f.cwe} | **OWASP:** ${f.owasp}")
+            sb.appendLine("- **Location:** `${f.targetClass ?: f.component ?: ""}#${f.targetMethod ?: ""}`")
+            sb.appendLine("- **Reachability:** `${f.reachability}` | **Confidence:** `${f.confidence}` | **CWE:** ${f.cwe}")
             if (f.evidence != null) {
                 sb.appendLine("- **Evidence:** `${f.evidence}`")
             }
-            if (f.codeSnippet != null) {
-                sb.appendLine()
-                sb.appendLine("```smali")
-                sb.appendLine(f.codeSnippet)
-                sb.appendLine("```")
-            }
             sb.appendLine()
-            sb.appendLine("**Description:** ${f.description}")
+            sb.appendLine("**Impact:** ${f.description}")
             sb.appendLine()
             sb.appendLine("**Remediation:** ${f.remediation}")
             sb.appendLine("</details>")
             sb.appendLine()
         }
-    } else if (activeFindings.isEmpty()) {
-        sb.appendLine("> ✅ **No active findings detected across 21 AppSec rules.**")
+    } else {
+        sb.appendLine("> ✅ **Zero actionable vulnerabilities detected in application code.**")
     }
+
+    if (criticalDependencies.isNotEmpty()) {
+        sb.appendLine("### 🚨 Critical Dependency & Runtime Hooks")
+        sb.appendLine()
+        for (f in criticalDependencies) {
+            sb.appendLine("- 🔴 **[${f.id}] ${f.title}** (`${f.targetClass}#${f.targetMethod}`) [${f.owner}]")
+            if (f.evidence != null) {
+                sb.appendLine("  > Evidence: `${f.evidence}`")
+            }
+        }
+        sb.appendLine()
+    }
+
     writeGitHubSummary(sb.toString())
 }
 

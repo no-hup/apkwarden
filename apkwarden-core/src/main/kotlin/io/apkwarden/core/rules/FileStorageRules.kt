@@ -100,6 +100,7 @@ class ZipSlipRule : Rule {
         val getNextEntryCalls = context.dexIndex.findCallSites("java.util.zip.ZipInputStream", "getNextEntry")
 
         for (cs in getNextEntryCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val hasGetEntryName = analyzer.containsCallTo("java.util.zip.ZipEntry", "getName")
             val hasFileWrite = analyzer.containsCallTo("java.io.File", "<init>") ||
@@ -122,7 +123,8 @@ class ZipSlipRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "ZipInputStream.getNextEntry() and ZipEntry.getName() used without File.getCanonicalPath()",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -150,6 +152,7 @@ class WorldReadableWritableRule : Rule {
         val modeWorldWritable = 0x0002
 
         for (cs in targetCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val args = analyzer.getInvocationArgs(cs.instruction)
             // openFileOutput(name, mode) -> mode is arg 2
@@ -188,7 +191,8 @@ class WorldReadableWritableRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "$modeName flag (0x${(regVal as RegisterValue.IntConstant).value.toString(16)}) passed to ${cs.targetMethod}",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }

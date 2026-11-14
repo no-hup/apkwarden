@@ -110,6 +110,7 @@ class WebViewFileAccessRule : Rule {
                 context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowUniversalAccessFromFileURLs")
 
         for (cs in fileAccessCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val args = analyzer.getInvocationArgs(cs.instruction)
             // setAllow*(boolean enabled) -> arg 0 is this, arg 1 is boolean (1=true, 0=false)
@@ -139,7 +140,8 @@ class WebViewFileAccessRule : Rule {
                         targetMethod = cs.callerMethod,
                         methodDescriptor = analyzer.getMethodDescriptor(),
                         evidence = "${cs.targetMethod}(true) invoked in ${cs.callerClass}",
-                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
                     )
                 )
             }
@@ -163,6 +165,7 @@ class JavascriptInterfaceRule : Rule {
         val jsInterfaceCalls = context.dexIndex.findCallSites("android.webkit.WebView", "addJavascriptInterface")
 
         for (cs in jsInterfaceCalls) {
+            val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val isRceRisk = context.attackSurface.minSdk < 17
             val severity = if (isRceRisk) Severity.CRITICAL else Severity.MEDIUM
@@ -185,7 +188,8 @@ class JavascriptInterfaceRule : Rule {
                     targetMethod = cs.callerMethod,
                     methodDescriptor = analyzer.getMethodDescriptor(),
                     evidence = "Call to WebView.addJavascriptInterface in ${cs.callerClass}",
-                    lineOrOffset = "Instruction offset: ${cs.instructionIndex}"
+                    lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                    reachability = reachability
                 )
             )
         }
