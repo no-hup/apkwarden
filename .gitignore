@@ -11,4 +11,6 @@ out/
 *.log
 *.sarif
 release-assets/
+scripts/growth/growth.db
+scripts/growth/outreach_drafts/
 
