@@ -13,4 +13,6 @@ out/
 release-assets/
 scripts/growth/growth.db
 scripts/growth/outreach_drafts/
+scripts/growth/__pycache__/
+__pycache__/
 

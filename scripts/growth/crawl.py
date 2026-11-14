@@ -274,6 +274,8 @@ def resolve_maintainer(full_name: str) -> Optional[Dict[str, Any]]:
             }
         return None
 
+    blog_fallback = None
+
     for c in commits:
         author = c.get("author")
         if not author:
@@ -298,20 +300,10 @@ def resolve_maintainer(full_name: str) -> Optional[Dict[str, Any]]:
                 "bio": profile.get("bio")
             }
 
-        if profile.get("blog"):
-            return {
-                "login": login,
-                "name": profile.get("name") or login,
-                "email": None,
-                "email_source": "blog",
-                "blog": profile.get("blog"),
-                "bio": profile.get("bio")
-            }
-
-        # Check commit author email
+        # Check commit author email before falling back to blog
         commit_email = c.get("commit", {}).get("author", {}).get("email")
         if commit_email and not commit_email.endswith("noreply.github.com"):
-            if not any(x in commit_email for x in ["localhost", "test.com", "example.com"]):
+            if not any(x in commit_email for x in ["localhost", "test.com", "example.com", "none@"]):
                 return {
                     "login": login,
                     "name": profile.get("name") or login,
@@ -321,7 +313,17 @@ def resolve_maintainer(full_name: str) -> Optional[Dict[str, Any]]:
                     "bio": profile.get("bio")
                 }
 
-    return None
+        if profile.get("blog") and not blog_fallback:
+            blog_fallback = {
+                "login": login,
+                "name": profile.get("name") or login,
+                "email": None,
+                "email_source": "blog",
+                "blog": profile.get("blog"),
+                "bio": profile.get("bio")
+            }
+
+    return blog_fallback
 
 
 def calculate_score(repo: Dict[str, Any], enrich: Dict[str, Any]) -> Tuple[int, List[str]]:
@@ -386,7 +388,7 @@ Came across {app_name} while looking through active Android repos that ship rele
 
 I {context_sentence}
 
-I've been building a small open-source CLI tool called apkwarden (github.com/no-hup/apkwarden) that scans release APKs directly in CI. Main thing is it's built to stay quiet unless something's actually real (like exported WebViews with file access, cleartext HTTP flags, or tapjacking permissions), so it doesn't spam you with hundreds of AndroidX false positives.
+I've been building a small CLI tool called apkwarden (github.com/no-hup/apkwarden) that scans release APKs directly in CI. Main thing is it's built to stay quiet unless something's actually real (like exported WebViews with file access, cleartext HTTP flags, or tapjacking permissions), so it doesn't spam you with hundreds of AndroidX false positives. It's completely free and open-source on GitHub (no signups or accounts), mostly just looking for candid feedback from folks shipping real Android apps.
 
 If you're curious, reply with a quick "yes" and I can run it on your public APK and email over the 1-page summary to see if it's actually useful for your pipeline. If not or if it looks noisy, no worries at all—won't email you again.
 
