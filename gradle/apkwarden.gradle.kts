@@ -3,7 +3,7 @@
 // Drop-in security scanner and attack surface gate for Android projects.
 //
 // Usage in app/build.gradle.kts:
-//   apply(from = "https://raw.githubusercontent.com/shaurya/apkwarden/main/gradle/apkwarden.gradle.kts")
+//   apply(from = "https://raw.githubusercontent.com/no-hup/apkwarden/main/gradle/apkwarden.gradle.kts")
 // Or locally:
 //   apply(from = "$rootDir/gradle/apkwarden.gradle.kts")
 //

@@ -39,7 +39,7 @@ def extract_email_body(draft_path: Path) -> tuple[str, str]:
         
     return subject, body
 
-def send_to_candidate(repo_full_name: str, to_email: str, draft_path: Path, dry_run: bool = False, as_draft: bool = False) -> bool:
+def send_to_candidate(repo_full_name: str, to_email: str, draft_path: Path, bcc: str = None, dry_run: bool = False, as_draft: bool = False) -> bool:
     if not draft_path.exists():
         print(f"[!] Error: Draft not found at {draft_path}")
         return False
@@ -50,7 +50,7 @@ def send_to_candidate(repo_full_name: str, to_email: str, draft_path: Path, dry_
     print(f"[*] Target: {repo_full_name}")
     print(f"[*] To:     {to_email}")
     print(f"[*] Subj:   {subject}")
-    print(f"[*] BCC:    {BCC_EMAIL}")
+    print(f"[*] BCC:    {bcc if bcc else '(None)'}")
     print(f"=======================================================")
     
     if dry_run:
@@ -71,9 +71,10 @@ def send_to_candidate(repo_full_name: str, to_email: str, draft_path: Path, dry_
             "--to", to_email,
             "--subject", subject,
             "--body-file", temp_body_path,
-            "--from-name", FROM_NAME,
-            "--bcc", BCC_EMAIL
+            "--from-name", FROM_NAME
         ]
+        if bcc:
+            cmd.extend(["--bcc", bcc])
         if as_draft:
             cmd.append("--draft")
             
@@ -103,11 +104,13 @@ def send_to_candidate(repo_full_name: str, to_email: str, draft_path: Path, dry_
 
 if __name__ == "__main__":
     import argparse
+    import time
     parser = argparse.ArgumentParser(description="Dispatch outreach emails")
     parser.add_argument("--repo", help="Single repo to send to")
     parser.add_argument("--limit", type=int, default=20, help="Number of pending drafts to send")
     parser.add_argument("--dry-run", action="store_true", help="Print command without sending")
     parser.add_argument("--draft", action="store_true", help="Create as Gmail draft instead of sending")
+    parser.add_argument("--bcc-all", action="store_true", help="BCC jaguarbailey@gmail.com on every email (default is first email only)")
     args = parser.parse_args()
 
     conn = sqlite3.connect(DB_PATH)
@@ -126,7 +129,9 @@ if __name__ == "__main__":
             FROM drafts d
             JOIN repos r ON d.repo_full_name = r.full_name
             JOIN maintainers m ON d.maintainer_login = m.login
-            WHERE d.status = 'PENDING_APPROVAL' AND m.email IS NOT NULL AND m.email != ''
+            WHERE d.status = 'PENDING_APPROVAL' 
+              AND r.score_reasons LIKE '%Direct APK release asset available%'
+              AND m.email IS NOT NULL AND m.email != ''
             ORDER BY r.score DESC, r.stars DESC
             LIMIT ?
         """, (args.limit,))
@@ -135,9 +140,15 @@ if __name__ == "__main__":
     print(f"[*] Found {len(rows)} targets ready for dispatch.")
     
     sent_count = 0
-    for repo_full_name, email, draft_path in rows:
-        ok = send_to_candidate(repo_full_name, email, Path(draft_path), dry_run=args.dry_run, as_draft=args.draft)
+    for idx, (repo_full_name, email, draft_path) in enumerate(rows):
+        # BCC only on the first email unless --bcc-all is explicitly passed
+        current_bcc = BCC_EMAIL if (idx == 0 or args.bcc_all) else None
+        
+        ok = send_to_candidate(repo_full_name, email, Path(draft_path), bcc=current_bcc, dry_run=args.dry_run, as_draft=args.draft)
         if ok:
             sent_count += 1
+            if not args.dry_run and idx < len(rows) - 1:
+                print("  [⏳] Waiting 3s before next email...")
+                time.sleep(3)
             
     print(f"\n[*] Finished. Total processed: {sent_count}/{len(rows)}")

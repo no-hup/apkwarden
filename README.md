@@ -61,12 +61,25 @@ flowchart TD
 
 ## 🚀 Quickstart Installation
 
-### 1. Homebrew (macOS & Linux)
+### 1. One-Line Install (macOS & Linux)
+Installs standalone binary into `~/.local/bin/apkwarden`:
 ```bash
-brew install shaurya/tap/apkwarden
+curl -fsSL https://raw.githubusercontent.com/no-hup/apkwarden/main/install.sh | bash
 ```
 
-### 2. Standalone Fat JAR (Universal)
+### 2. Gradle Drop-in (Zero-Install for Android Teams)
+Add to your `app/build.gradle.kts`:
+```kotlin
+apply(from = "https://raw.githubusercontent.com/no-hup/apkwarden/main/gradle/apkwarden.gradle.kts")
+```
+*(Or in Groovy `app/build.gradle`: `apply from: 'https://raw.githubusercontent.com/no-hup/apkwarden/main/gradle/apkwarden.gradle.kts'`)*
+
+Then run directly in Android Studio or CI:
+```bash
+./gradlew apkwardenScan
+```
+
+### 3. Standalone Fat JAR (Universal)
 Requires Java 17+:
 ```bash
 # Download latest release
@@ -76,12 +89,12 @@ curl -sSL -O https://github.com/no-hup/apkwarden/releases/latest/download/apkwar
 java -jar apkwarden-all.jar --help
 ```
 
-### 3. Docker (Multi-Arch)
+### 4. Docker (Multi-Arch)
 ```bash
-docker run --rm -v $(pwd):/workspace ghcr.io/shaurya/apkwarden:latest scan /workspace/app-release.apk
+docker run --rm -v $(pwd):/workspace ghcr.io/no-hup/apkwarden:latest scan /workspace/app-release.apk
 ```
 
-### 4. Build from Source
+### 5. Build from Source
 ```bash
 git clone https://github.com/no-hup/apkwarden.git
 cd apkwarden
@@ -178,18 +191,16 @@ jobs:
 
       # 1. Diff attack surface against base branch
       - name: Verify Attack Surface Drift
-        uses: shaurya/apkwarden@v1
+        uses: no-hup/apkwarden@v0.1.0
         with:
-          target: app/build/outputs/apk/release/app-release.apk
           command: diff
           git-ref: origin/main:surface.lock.json
           fail-on-breaking: 'true'
 
-      # 2. Run static security scan with SARIF reporting
+      # 2. Run static security scan with SARIF reporting (target auto-detected)
       - name: Run APKwarden Security Scan
-        uses: shaurya/apkwarden@v1
+        uses: no-hup/apkwarden@v0.1.0
         with:
-          target: app/build/outputs/apk/release/app-release.apk
           command: scan
           sarif-file: apkwarden-results.sarif
           baseline-file: .apkwarden-baseline.json

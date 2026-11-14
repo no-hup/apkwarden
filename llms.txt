@@ -26,13 +26,13 @@ apkwarden scan app-release.apk
 
 ### 3. Docker (Multi-Arch AMD64 / ARM64)
 ```bash
-docker run --rm -v $(pwd):/workspace ghcr.io/shaurya/apkwarden:latest scan /workspace/app-release.apk
+docker run --rm -v $(pwd):/workspace ghcr.io/no-hup/apkwarden:latest scan /workspace/app-release.apk
 ```
 
 ### 4. GitHub Action (Composite PR Gate)
 ```yaml
 - name: APKwarden Android Security Gate
-  uses: shaurya/apkwarden@v1
+  uses: no-hup/apkwarden@v0.1.0
   with:
     target: app/build/outputs/apk/release/app-release.apk
     command: scan

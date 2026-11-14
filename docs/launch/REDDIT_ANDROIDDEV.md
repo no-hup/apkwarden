@@ -30,7 +30,7 @@ git clone https://github.com/no-hup/apkwarden.git && cd apkwarden
 
 Or as a composite GitHub Action:
 ```yaml
-- uses: shaurya/apkwarden@v1
+- uses: no-hup/apkwarden@v0.1.0
   with:
     target: app/build/outputs/apk/release/app-release.apk
     command: diff

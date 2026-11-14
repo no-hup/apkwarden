@@ -8,8 +8,9 @@ branding:
 
 inputs:
   target:
-    description: 'Path to APK, AAB, split APK set, or surface.lock.json to analyze.'
-    required: true
+    description: 'Path to APK, AAB, split APK set, or surface.lock.json to analyze (auto-detected if omitted).'
+    required: false
+    default: ''
   command:
     description: 'Command to run: "scan" (default), "diff", "surface", or "lock".'
     required: false
