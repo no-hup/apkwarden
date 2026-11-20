@@ -27,6 +27,27 @@ class SqlInjectionRule : Rule {
             val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val descriptor = analyzer.getMethodDescriptor()
+
+            // Skip DDL migrations and schema management in execSQL (CREATE TABLE, DROP TABLE, ALTER TABLE, PRAGMA)
+            // SQLite syntax does not support '?' parameter binding for table/column identifiers in DDL statements.
+            if (cs.targetMethod == "execSQL") {
+                val isDdlOrMigration = cs.callerMethod.lowercase().contains("upgrade") ||
+                        cs.callerMethod.lowercase().contains("migrate") ||
+                        cs.callerMethod.lowercase().contains("onupgrade") ||
+                        cs.callerMethod.lowercase().contains("onconfigure") ||
+                        cs.callerClass.lowercase().contains("migration") ||
+                        cs.callerClass.lowercase().contains("schemamanager") ||
+                        analyzer.containsStringLiteral { s ->
+                            val upper = s.uppercase()
+                            upper.contains("CREATE TABLE") || upper.contains("DROP TABLE") ||
+                            upper.contains("ALTER TABLE") || upper.contains("CREATE INDEX") ||
+                            upper.contains("PRAGMA ")
+                        }
+                if (isDdlOrMigration) {
+                    continue
+                }
+            }
+
             val args = analyzer.getInvocationArgs(cs.instruction)
             val sqlReg = args.getOrNull(1)
 
@@ -277,6 +298,19 @@ class HardcodedSecretsRule : Rule {
         if (s.matches(Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"""))) return false // UUID
         if (s.matches(Regex("""[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64}"""))) return false // Pure hex hash
         if (s.contains(' ') || s.contains('\t') || s.contains('\n')) return false
+
+        // Code syntax, CSS, JSON/XML fragments, format strings are not API tokens
+        if (s.contains('(') || s.contains(')') || s.contains('#') ||
+            s.contains('{') || s.contains('}') || s.contains('[') || s.contains(']') ||
+            s.contains('*') || s.contains(';') || s.contains(':') || s.contains('<') ||
+            s.contains('>') || s.contains('"') || s.contains('\'')) return false
+
+        // Sequential alphabet lookup tables (Base64/Hex encoding tables)
+        if (s.startsWith("ABCDEFGHIJKLMNOP") || s.startsWith("abcdefghijklmnop") ||
+            s.startsWith("0123456789ABCDEF") || s.startsWith("0123456789abcdef")) return false
+
+        // Common Android/framework lifecycle and exception type names
+        if (s.contains("Lifecycle") || s.contains("Fragment") || s.contains("Activity") || s.contains("Exception")) return false
 
         // Dotted Java-style identifiers: >= 2 dots, each part valid identifier, no base64/URL chars
         // e.g. com.wispr.flowapp.service.ACTION_PERMISSION_GRANTED

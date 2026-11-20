@@ -96,11 +96,22 @@ class InsecureRandomRule : Rule {
 
         for (cs in randomInitCalls) {
             val caller = cs.callerClass.lowercase()
+            // Exclude non-security domains where Random is standard (media playback analytics, UI animations, etc.)
+            if (caller.contains("media3") || caller.contains("exoplayer") ||
+                caller.contains("playback") || caller.contains("animation") ||
+                caller.contains("analytics") || caller.contains("metrics")) continue
+
+            val methodName = cs.callerMethod.lowercase()
+
             // Check if caller class or method name implies security context
             val isSecurityContext = caller.contains("crypto") || caller.contains("auth") ||
                     caller.contains("token") || caller.contains("otp") || caller.contains("nonce") ||
-                    caller.contains("session") || caller.contains("password") || caller.contains("security") ||
-                    cs.callerMethod.lowercase().contains("token") || cs.callerMethod.lowercase().contains("key")
+                    caller.contains("password") || caller.contains("security") ||
+                    caller.contains("cipher") || caller.contains("keystore") ||
+                    caller.contains("keygenerator") ||
+                    methodName.contains("token") || methodName.contains("key") ||
+                    methodName.contains("nonce") || methodName.contains("salt") ||
+                    methodName.contains("password")
 
             if (isSecurityContext) {
                 findings.add(

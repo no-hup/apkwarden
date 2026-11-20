@@ -36,7 +36,15 @@ class DirtyStreamTraversalRule : Rule {
                     analyzer.containsCallTo("android.net.Uri", "getPath") || hasDisplayName
             val hasSanitization = analyzer.hasPathSanitization()
 
-            if (hasLastPathSegment && !hasSanitization) {
+            val isDirectExported = reachability == Reachability.DIRECT
+            val hasFileDestination = analyzer.containsCallTo("java.io.File", "<init>") ||
+                    analyzer.containsCallTo("java.io.FileOutputStream", "<init>") ||
+                    analyzer.containsCallTo("android.content.Context", "openFileOutput") ||
+                    analyzer.containsCallTo("java.nio.file.Files", "write") ||
+                    analyzer.containsCallTo("java.nio.file.Files", "copy") ||
+                    analyzer.containsCallTo("java.nio.file.Files", "newOutputStream")
+
+            if (hasLastPathSegment && !hasSanitization && (isDirectExported || hasFileDestination)) {
                 val (title, severity, confidence, desc) = when (reachability) {
                     Reachability.DIRECT -> Quadruple(
                         "Dirty Stream File Overwrite Vulnerability",

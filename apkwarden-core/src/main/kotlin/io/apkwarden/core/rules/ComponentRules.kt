@@ -53,18 +53,16 @@ class IntentRedirectionRule : Rule {
             }
 
             if (isTainted) {
-                // Attribution for one-line intent helpers (androidx.core.content.ContextCompat and androidx.activity.ComponentActivity)
-                val isFrameworkHelper = cs.callerClass == "androidx.core.content.ContextCompat" ||
-                        cs.callerClass == "androidx.activity.ComponentActivity"
+                val isLibrary = KnownLibraries.isLibraryClass(cs.callerClass)
 
-                if (isFrameworkHelper) {
+                if (isLibrary) {
                     val directCallers = context.dexIndex.findCallSites(cs.callerClass, cs.targetMethod)
                     val appCallers = mutableListOf<io.apkwarden.core.dex.CallSite>()
 
                     for (dc in directCallers) {
                         if (isAppClass(dc.callerClass)) {
                             appCallers.add(dc)
-                        } else if (dc.callerClass == "androidx.core.content.ContextCompat" || dc.callerClass == "androidx.activity.ComponentActivity") {
+                        } else if (KnownLibraries.isLibraryClass(dc.callerClass)) {
                             val secondCallers = context.dexIndex.findCallSites(dc.callerClass, dc.targetMethod)
                             for (sc in secondCallers) {
                                 if (isAppClass(sc.callerClass)) {
@@ -101,8 +99,10 @@ class IntentRedirectionRule : Rule {
                                 )
                             )
                         }
-                        continue
                     }
+                    // NEVER emit an Intent Redirection finding directly on a third-party framework or library class
+                    // when no application caller was identified.
+                    continue
                 }
 
                 val (title, severity, confidence, desc) = getFindingDetails(reachability, cs.callerClass, cs.targetMethod)

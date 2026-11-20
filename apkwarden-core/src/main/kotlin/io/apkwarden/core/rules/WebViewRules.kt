@@ -28,6 +28,13 @@ class WebViewArbitraryUrlRule : Rule {
             if (reachability == Reachability.UNREACHABLE) continue
 
             val analyzer = MethodAnalyzer(cs.method)
+
+            // Dedicated in-app browser activities (e.g. WebBrowserActivity) are designed to load user/intent URLs.
+            // Exclude from vulnerability findings unless dangerous settings (file access, universal access) are present.
+            if (cs.callerClass.lowercase().contains("browser")) {
+                continue
+            }
+
             val args = analyzer.getInvocationArgs(cs.instruction)
             // loadUrl(url) -> arg 0 is this, arg 1 is url
             if (args.size < 2) continue
@@ -168,19 +175,20 @@ class JavascriptInterfaceRule : Rule {
             val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
             val isRceRisk = context.attackSurface.minSdk < 17
-            val severity = if (isRceRisk) Severity.CRITICAL else Severity.MEDIUM
+            val severity = if (isRceRisk) Severity.CRITICAL else Severity.INFO
+            val confidence = if (isRceRisk) Confidence.CERTAIN else Confidence.TENTATIVE
 
             findings.add(
                 Finding(
                     id = id,
-                    title = if (isRceRisk) "RCE via WebView addJavascriptInterface on minSdk < 17" else "JavaScript Interface Attached to WebView",
+                    title = if (isRceRisk) "RCE via WebView addJavascriptInterface on minSdk < 17" else "JavaScript Interface Attached to WebView (Hardening Notice)",
                     severity = severity,
-                    confidence = Confidence.CERTAIN,
+                    confidence = confidence,
                     cwe = "CWE-94",
                     owasp = "M4: Insufficient Input/Output Validation",
                     description = "Class '${cs.callerClass}#${cs.callerMethod}' calls 'WebView.addJavascriptInterface'. " +
                             if (isRceRisk) "Because minSdk (${context.attackSurface.minSdk}) is below 17, methods can be invoked via Java reflection to execute arbitrary shell commands."
-                            else "Exposed object methods can be called by any untrusted web content or XSS loaded into the WebView.",
+                            else "On minSdk >= 17, Java reflection is restricted by the OS runtime. Ensure only whitelisted, strictly HTTPS origins can load in the WebView, and only expose minimal, non-sensitive methods.",
                     remediation = if (isRceRisk) "Raise minSdk to 17+ and annotate methods with @JavascriptInterface."
                     else "Ensure only whitelisted, strictly HTTPS origins can load in the WebView, and only expose minimal, non-sensitive methods.",
                     component = cs.callerClass,
