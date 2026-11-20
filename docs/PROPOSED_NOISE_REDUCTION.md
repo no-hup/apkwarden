@@ -1,12 +1,14 @@
 # APKwarden: noise cuts that do not drop real findings
 
+> **Status:** Fully implemented in APKwarden `v0.1.0` (all 9 noise reductions verified across benchmark suite).
+
 Submitted against APKwarden 0.1.0, from scans of three shipped apps:
 
 - Wispr Flow `com.wispr.flowapp` 1.0.0 (75)
 - Paycor `com.paycor.perform` 6.3.9 (2026111204)
 - ShareKaro Lite `share.sharekaro.pro` 5.1.49.1 (10501491)
 
-All three scored 0/100. The score starts at 100. A critical costs 25, a high costs 15, a medium costs 5 (`ScanEngine`). One duplicated library critical is enough to floor the score. The findings below are still real bugs and must keep firing: an empty `X509TrustManager.checkServerTrusted` that does not throw, Payactiv WebViews that call `setAllowFileAccess(true)` and `addJavascriptInterface`, ShareKaro‚Äôs own `rawQuery` / `execSQL` call sites, and a 2-argument `registerReceiver` on targetSdk 34+.
+All three scored 0/100. The score starts at 100. A critical costs 25, a high costs 15, a medium costs 5 (`ScanEngine`). One duplicated library critical is enough to floor the score. The findings below are still real bugs and must keep firing: an empty `X509TrustManager.checkServerTrusted` that does not throw, Payactiv WebViews that call `setAllowFileAccess(true)` and `addJavascriptInterface`, ShareKaro's own `rawQuery` / `execSQL` call sites, and a 2-argument `registerReceiver` on targetSdk 34+.
 
 These nine changes remove duplicate rows, strings that cannot be a secret or an endpoint, and separate first-party PR gating from third-party library noise. Each one says what to change, why, and why a real issue still shows up.
 
@@ -16,7 +18,7 @@ These nine changes remove duplicate rows, strings that cannot be a secret or an 
 
 **Why.** The same sink is being emitted more than once, and the score charges full price per copy.
 
-- Wispr: `io.grpc.util.AdvancedTlsX509TrustManager#checkServerTrusted` is the entire critical section, printed twice, same evidence (‚Äú8 instructions and throws no CertificateException‚Äù). Two criticals is 50 points off the score before any other finding.
+- Wispr: `io.grpc.util.AdvancedTlsX509TrustManager#checkServerTrusted` is the entire critical section, printed twice, same evidence ("8 instructions and throws no CertificateException"). Two criticals is 50 points off the score before any other finding.
 - ShareKaro: `APK-SEC-006` prints `com.bytedance.adsdk.ahm.fi#ahm` four times with the same evidence.
 
 `DexIndex.classDefs` is a map keyed by class name, so this is not two different classes. It is the same method (or the same overload shape) leaving the rule twice. The score formula then treats a duplicate as a second vulnerability.
@@ -32,17 +34,17 @@ These nine changes remove duplicate rows, strings that cannot be a secret or an 
 - `android.settings.`
 - `android.provider.`
 
-The known-prefix regex matches (`AKIA‚Ä¶`, `AIza‚Ä¶`, `sk_live_‚Ä¶`, Slack, PEM, Square) stay as they are. Do not add a filter for base64-shaped strings, strings that end in `=`, or strings with no digits.
+The known-prefix regex matches (`AKIA...`, `AIza...`, `sk_live_...`, Slack, PEM, Square) stay as they are. Do not add a filter for base64-shaped strings, strings that end in `=`, or strings with no digits.
 
-**Why.** The tentative entropy branch (length 28..80, Shannon entropy > 4.5) is what made ShareKaro unreadable: 5,003 of 5,210 findings. The current denylist only checks prefixes (`android.intent.`, `android.permission.`, `androidx.`, `java.`, `kotlin.`, plus URLs and dotted `.com` / `.java` / `.kt`). Wispr‚Äôs own package still produced hits that are action strings:
+**Why.** The tentative entropy branch (length 28..80, Shannon entropy > 4.5) is what made ShareKaro unreadable: 5,003 of 5,210 findings. The current denylist only checks prefixes (`android.intent.`, `android.permission.`, `androidx.`, `java.`, `kotlin.`, plus URLs and dotted `.com` / `.java` / `.kt`). Wispr's own package still produced hits that are action strings:
 
-- `com.wispr.flowapp.service.OnboardingService` ‚Äî masked `com....NTED` (a permission-granted action)
-- `com.wispr.ui.home.HomeScreenKt` ‚Äî masked `andr...SION`
-- `com.wispr.ui.protection.DeviceProtectionManager` ‚Äî masked `andr...IONS`
+- `com.wispr.flowapp.service.OnboardingService` — masked `com....NTED` (a permission-granted action)
+- `com.wispr.ui.home.HomeScreenKt` — masked `andr...SION`
+- `com.wispr.ui.protection.DeviceProtectionManager` — masked `andr...IONS`
 
 Those are `android.settings.*` / permission action names. They do not start with the prefixes the rule already ignores, so they fall through to the entropy check and come out as medium findings at confidence tentative.
 
-**Why it is safe.** A cloud key, a PEM block, or a bearer token does not contain `android.permission.`, `android.intent.`, `android.settings.`, or `android.provider.`. The known-key regexes run first, so a real AWS or Google key embedded in a longer string is still reported at high / certain. ShareKaro‚Äôs 5,003 hits look like tokens (`VeE5‚Ä¶qGw=`). They do not contain those substrings, so they stay. Dropping ‚Äúno digits‚Äù or ‚Äúhigh entropy base64‚Äù would also drop a real alphabetic or base64 secret. That cut is not in this change.
+**Why it is safe.** A cloud key, a PEM block, or a bearer token does not contain `android.permission.`, `android.intent.`, `android.settings.`, or `android.provider.`. The known-key regexes run first, so a real AWS or Google key embedded in a longer string is still reported at high / certain. ShareKaro's 5,003 hits look like tokens (`VeE5...qGw=`). They do not contain those substrings, so they stay. Dropping "no digits" or "high entropy base64" would also drop a real alphabetic or base64 secret. That cut is not in this change.
 
 ## 3. Skip documentation URLs, and report the cleartext flag once
 
@@ -56,7 +58,7 @@ Those are `android.settings.*` / permission action names. They do not start with
 
 Do not skip `10.0.2.2`.
 
-When `attackSurface.usesCleartextTraffic == true`, or the network security config‚Äôs base config allows cleartext, emit one finding whose evidence is that flag or config. Keep the per-URL findings only for the URLs that survive the skip list.
+When `attackSurface.usesCleartextTraffic == true`, or the network security config's base config allows cleartext, emit one finding whose evidence is that flag or config. Keep the per-URL findings only for the URLs that survive the skip list.
 
 **Why.** On Paycor (targetSdk 36, payroll) the manifest sets `android:usesCleartextTraffic=true`. That is the issue. The rule never says so. It only lists hardcoded `http://` strings, and only because cleartext is already permitted. The strings it listed are not servers the app uses:
 
@@ -67,15 +69,15 @@ When `attackSurface.usesCleartextTraffic == true`, or the network security confi
 
 The first three are a reserved example host and XML namespace URIs. They burned three of the ten URL slots (`distinctUrls.entries.take(10)`), which can push a real endpoint off the list.
 
-**Why it is safe.** `example.com` is reserved by RFC 2606. The Adobe XMP and `XMLConstants` strings are schema identifiers. No app reaches those hosts for user data. A real `http://` API host does not match that list, so it is still reported. `10.0.2.2` is the Android emulator‚Äôs alias for the host machine. A build that still calls it is a shipped debug endpoint, so it stays. The new flag finding adds the Paycor case the URL list missed. It does not replace the URL findings for real hosts.
+**Why it is safe.** `example.com` is reserved by RFC 2606. The Adobe XMP and `XMLConstants` strings are schema identifiers. No app reaches those hosts for user data. A real `http://` API host does not match that list, so it is still reported. `10.0.2.2` is the Android emulator's alias for the host machine. A build that still calls it is a shipped debug endpoint, so it stays. The new flag finding adds the Paycor case the URL list missed. It does not replace the URL findings for real hosts.
 
 ## 4. Skip SQL construction only when every appended piece is a constant
 
 **Change.** In `SqlInjectionRule` (`APK-SEC-015`), keep the current gate: the method contains `StringBuilder.append`, `String.concat`, or `String.format`, and it calls `SQLiteDatabase.rawQuery` or `execSQL`. Add one exception. If every `append` / `concat` / `format` argument the analyzer can see is a string constant, do not emit. If any argument is a register `MethodAnalyzer` cannot resolve, emit exactly as today.
 
-**Why.** The rule currently asks only ‚Äúdoes this method contain both a string builder and a SQL call?‚Äù It does not ask whether the built string is the query, or whether any piece is non-constant. Media3 and Play services schema helpers (`androidx.media3.database.StandaloneDatabaseProvider`, `com.google.android.gms.measurement.internal.j`) are flagged high / firm for `CREATE TABLE` style SQL. That is static SQL. On ShareKaro the same rule also hits `share.sharekaro.pro.*` methods whose arguments are not constants. Those are the ones worth a ticket. The static ones bury them: 74 SQL findings in that app, 15 in Wispr, almost all libraries.
+**Why.** The rule currently asks only "does this method contain both a string builder and a SQL call?" It does not ask whether the built string is the query, or whether any piece is non-constant. Media3 and Play services schema helpers (`androidx.media3.database.StandaloneDatabaseProvider`, `com.google.android.gms.measurement.internal.j`) are flagged high / firm for `CREATE TABLE` style SQL. That is static SQL. On ShareKaro the same rule also hits `share.sharekaro.pro.*` methods whose arguments are not constants. Those are the ones worth a ticket. The static ones bury them: 74 SQL findings in that app, 15 in Wispr, almost all libraries.
 
-**Why it is safe.** Injection needs a non-constant fragment (user input, another register, a return value). A method where every appended piece resolved to a const-string cannot include that. The fail-open side is the important one: an unresolved register still produces the finding, at the same severity and confidence as today. This does not require taint proof. ShareKaro‚Äôs own call sites stay as long as the analyzer cannot show that every piece is a literal. If the analyzer is unsure, the finding remains.
+**Why it is safe.** Injection needs a non-constant fragment (user input, another register, a return value). A method where every appended piece resolved to a const-string cannot include that. The fail-open side is the important one: an unresolved register still produces the finding, at the same severity and confidence as today. This does not require taint proof. ShareKaro's own call sites stay as long as the analyzer cannot show that every piece is a literal. If the analyzer is unsure, the finding remains.
 
 ## 5. Attribute one-line intent helpers to the app caller
 
@@ -83,7 +85,7 @@ The first three are a reserved example host and XML namespace URIs. They burned 
 
 Do not add a package denylist. Do not apply this rewrite to `PendingIntentCompat`, ads SDKs, or WebView rules.
 
-**Why.** On these scans the intent-redirect highs are the helper, not the app. Wispr and Paycor both flag `androidx.core.content.ContextCompat#startActivity` and `androidx.activity.ComponentActivity#startActivityForResult` because the tainted value is ‚Äúa method parameter of type Intent‚Äù. Those methods are one-line forwards. The bug, when there is one, is the app method that passed an attacker-controlled intent in. The report currently stops at the library frame, so the app team sees a framework class they do not own and closes the ticket.
+**Why.** On these scans the intent-redirect highs are the helper, not the app. Wispr and Paycor both flag `androidx.core.content.ContextCompat#startActivity` and `androidx.activity.ComponentActivity#startActivityForResult` because the tainted value is "a method parameter of type Intent". Those methods are one-line forwards. The bug, when there is one, is the app method that passed an attacker-controlled intent in. The report currently stops at the library frame, so the app team sees a framework class they do not own and closes the ticket.
 
 **Why it is safe.** The helper row is dropped only when an application caller was found and reported instead. The same sink, the same taint, and the same rule id are still in the report, on the method the app can actually change. When the scanner cannot see an app caller (the usual case for a library that is only reachable through reflection or a call chain the reachability pass did not recover), the original helper finding stays. No sink is discarded.
 
@@ -134,9 +136,9 @@ Report these at severity `INFO` and confidence `CERTAIN`, with guidance on verif
 
 These would remove more noise, and they would also mute real issues. They are listed so they are not folded into the change above.
 
-- Suppressing `androidx.*`, Play services, gRPC, Facebook, or ads SDKs by package. ShareKaro‚Äôs only critical is `com.facebook.ads.redexgen.X.b9#checkServerTrusted` (one instruction, no throw) inside an SDK the app ships. Paycor‚Äôs WebView findings are in `com.payactiv.aar`, which is product code and looks like a dependency by name.
+- Suppressing `androidx.*`, Play services, gRPC, Facebook, or ads SDKs by package. ShareKaro's only critical is `com.facebook.ads.redexgen.X.b9#checkServerTrusted` (one instruction, no throw) inside an SDK the app ships. Paycor's WebView findings are in `com.payactiv.aar`, which is product code and looks like a dependency by name.
 - Narrowing `APK-SEC-013` to a one-instruction `return-void`. The rule already ignores a method that calls `checkServerTrusted`. The gRPC method is 8 instructions and does not throw. Some real bypasses log and return. They would disappear with that cut.
-- Requiring proven taint on the SQL register before `APK-SEC-015` fires. Any call site where the analyzer loses the register, including ShareKaro‚Äôs own, would go quiet.
+- Requiring proven taint on the SQL register before `APK-SEC-015` fires. Any call site where the analyzer loses the register, including ShareKaro's own, would go quiet.
 - Dropping 2-argument `registerReceiver` on targetSdk >= 34 (`APK-SEC-004`). On Android 14 that call throws `SecurityException`. ShareKaro has one in its own package. The ad-SDK copies are noisy, and they are still crash sites if that code runs.
 - Filtering base64-looking entropy hits, or moving them out of detection. After change 2, ShareKaro will still be dominated by those strings. They are shaped like keys. A later presentation choice can group them as unverified so they do not own the score. That is not part of this change, because it changes what the score claims, and this list is limited to cuts that do not change what gets detected.
 
