@@ -726,4 +726,139 @@ class RulesEngineTest {
         assertThat(pemFindings).hasSize(1)
         assertThat(pemFindings[0].severity).isEqualTo(Severity.CRITICAL)
     }
+
+    @Test
+    fun `sql injection flags dynamic delete even when create table appears in same method`() {
+        val smali = """
+            .class public Lcom/example/SqlMigrationWithDelete;
+            .super Ljava/lang/Object;
+
+            .method public upgradeDb(Landroid/database/sqlite/SQLiteDatabase;Ljava/lang/String;)V
+                .registers 6
+                new-instance v0, Ljava/lang/StringBuilder;
+                invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+                const-string v1, "CREATE TABLE IF NOT EXISTS users (id INT)"
+                invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+                move-result-object v2
+                invoke-virtual {p1, v2}, Landroid/database/sqlite/SQLiteDatabase;->execSQL(Ljava/lang/String;)V
+
+                new-instance v0, Ljava/lang/StringBuilder;
+                invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+                const-string v1, "DELETE FROM users WHERE name = '"
+                invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                invoke-virtual {v0, p2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+                invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+                move-result-object v2
+                invoke-virtual {p1, v2}, Landroid/database/sqlite/SQLiteDatabase;->execSQL(Ljava/lang/String;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = SqlInjectionRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-015")
+        assertThat(findings[0].severity).isEqualTo(Severity.HIGH)
+    }
+
+    @Test
+    fun `javascript interface on exported activity escalates to medium`() {
+        val smali = """
+            .class public Lcom/example/InsecureBrowserActivity;
+            .super Landroid/app/Activity;
+
+            .method public onCreate(Landroid/os/Bundle;)V
+                .registers 5
+                new-instance v0, Landroid/webkit/WebView;
+                invoke-direct {v0, p0}, Landroid/webkit/WebView;-><init>(Landroid/content/Context;)V
+                new-instance v1, Ljava/lang/Object;
+                invoke-direct {v1}, Ljava/lang/Object;-><init>()V
+                const-string v2, "nativeBridge"
+                invoke-virtual {v0, v1, v2}, Landroid/webkit/WebView;->addJavascriptInterface(Ljava/lang/Object;Ljava/lang/String;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali, exportedComponents = listOf("com.example.InsecureBrowserActivity"))
+        val findings = JavascriptInterfaceRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-009")
+        assertThat(findings[0].severity).isEqualTo(Severity.MEDIUM)
+    }
+
+    @Test
+    fun `insecure random flags generateSessionId using Random in app code`() {
+        val smali = """
+            .class public Lcom/example/SessionManager;
+            .super Ljava/lang/Object;
+
+            .method public generateSessionId()Ljava/lang/String;
+                .registers 2
+                new-instance v0, Ljava/util/Random;
+                invoke-direct {v0}, Ljava/util/Random;-><init>()V
+                const-string v0, "dummy"
+                return-object v0
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = InsecureRandomRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-012")
+        assertThat(findings[0].severity).isEqualTo(Severity.MEDIUM)
+    }
+
+    @Test
+    fun `dirty stream flags openInputStream when write happens in 1-hop helper method`() {
+        val smali = """
+            .class public Lcom/example/DirtyStreamWithHelper;
+            .super Ljava/lang/Object;
+
+            .method public processStream(Landroid/content/ContentResolver;Landroid/net/Uri;)V
+                .registers 5
+                invoke-virtual {p1, p2}, Landroid/content/ContentResolver;->openInputStream(Landroid/net/Uri;)Ljava/io/InputStream;
+                move-result-object v0
+                invoke-virtual {p2}, Landroid/net/Uri;->getLastPathSegment()Ljava/lang/String;
+                move-result-object v1
+                invoke-virtual {p0, v1, v0}, Lcom/example/DirtyStreamWithHelper;->saveToCache(Ljava/lang/String;Ljava/io/InputStream;)V
+                return-void
+            .end method
+
+            .method public saveToCache(Ljava/lang/String;Ljava/io/InputStream;)V
+                .registers 5
+                new-instance v0, Ljava/io/File;
+                const-string v1, "/cache"
+                invoke-direct {v0, v1, p1}, Ljava/io/File;-><init>(Ljava/lang/String;Ljava/lang/String;)V
+                new-instance v1, Ljava/io/FileOutputStream;
+                invoke-direct {v1, v0}, Ljava/io/FileOutputStream;-><init>(Ljava/io/File;)V
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = DirtyStreamTraversalRule().analyze(ctx)
+        assertThat(findings).hasSize(1)
+        assertThat(findings[0].id).isEqualTo("APK-SEC-005")
+    }
+
+    @Test
+    fun `hardcoded secrets flags high-entropy credential pair`() {
+        val smali = """
+            .class public Lcom/example/AppCredentials;
+            .super Ljava/lang/Object;
+
+            .method public getCreds()V
+                .registers 2
+                const-string v0, "my_oauth_client_id_12345:secret_token_abcdef1234567890"
+                return-void
+            .end method
+        """.trimIndent()
+
+        val ctx = createContext(smali)
+        val findings = HardcodedSecretsRule().analyze(ctx)
+        val credFindings = findings.filter { it.title.contains("High-Entropy Secret") }
+        assertThat(credFindings).hasSize(1)
+        assertThat(credFindings[0].severity).isEqualTo(Severity.MEDIUM)
+    }
 }

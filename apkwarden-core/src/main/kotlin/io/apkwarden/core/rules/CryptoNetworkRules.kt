@@ -9,6 +9,7 @@ import io.apkwarden.core.dex.MethodAnalyzer
 import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.KnownLibraries
 import io.apkwarden.core.model.Severity
 
 /**
@@ -95,25 +96,30 @@ class InsecureRandomRule : Rule {
         val randomInitCalls = context.dexIndex.findCallSites("java.util.Random", "<init>")
 
         for (cs in randomInitCalls) {
-            val caller = cs.callerClass.lowercase()
-            // Exclude non-security domains where Random is standard (media playback analytics, UI animations, etc.)
-            if (caller.contains("media3") || caller.contains("exoplayer") ||
-                caller.contains("playback") || caller.contains("animation") ||
-                caller.contains("analytics") || caller.contains("metrics")) continue
+            // Suppress third-party library classes via KnownLibraries (e.g. Media3, ExoPlayer, gRPC, OkHttp)
+            if (KnownLibraries.isLibraryClass(cs.callerClass)) continue
 
+            val caller = cs.callerClass.lowercase()
             val methodName = cs.callerMethod.lowercase()
 
             // Check if caller class or method name implies security context
-            val isSecurityContext = caller.contains("crypto") || caller.contains("auth") ||
+            val isSecurityClass = caller.contains("crypto") || caller.contains("auth") ||
                     caller.contains("token") || caller.contains("otp") || caller.contains("nonce") ||
                     caller.contains("password") || caller.contains("security") ||
                     caller.contains("cipher") || caller.contains("keystore") ||
-                    caller.contains("keygenerator") ||
-                    methodName.contains("token") || methodName.contains("key") ||
-                    methodName.contains("nonce") || methodName.contains("salt") ||
-                    methodName.contains("password")
+                    caller.contains("keygenerator") || caller.contains("keygen") ||
+                    caller.contains("sessionmanager") || caller.contains("sessiontoken") ||
+                    caller.contains("sessionid")
 
-            if (isSecurityContext) {
+            val isSecurityMethod = methodName.contains("token") || methodName.contains("nonce") ||
+                    methodName.contains("salt") || methodName.contains("password") ||
+                    methodName.contains("sessionid") || methodName.contains("sessiontoken") ||
+                    methodName.contains("generatesession") || methodName.contains("createsession") ||
+                    methodName.contains("generatekey") || methodName.contains("createkey") ||
+                    methodName.contains("derivekey") || methodName.contains("secretkey") ||
+                    methodName.contains("encryptionkey") || methodName.contains("apikey")
+
+            if (isSecurityClass || isSecurityMethod) {
                 findings.add(
                     Finding(
                         id = id,

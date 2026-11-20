@@ -5,6 +5,7 @@ import io.apkwarden.core.dex.MethodAnalyzer
 import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.KnownLibraries
 import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 import kotlin.math.ln
@@ -28,26 +29,6 @@ class SqlInjectionRule : Rule {
             val analyzer = MethodAnalyzer(cs.method)
             val descriptor = analyzer.getMethodDescriptor()
 
-            // Skip DDL migrations and schema management in execSQL (CREATE TABLE, DROP TABLE, ALTER TABLE, PRAGMA)
-            // SQLite syntax does not support '?' parameter binding for table/column identifiers in DDL statements.
-            if (cs.targetMethod == "execSQL") {
-                val isDdlOrMigration = cs.callerMethod.lowercase().contains("upgrade") ||
-                        cs.callerMethod.lowercase().contains("migrate") ||
-                        cs.callerMethod.lowercase().contains("onupgrade") ||
-                        cs.callerMethod.lowercase().contains("onconfigure") ||
-                        cs.callerClass.lowercase().contains("migration") ||
-                        cs.callerClass.lowercase().contains("schemamanager") ||
-                        analyzer.containsStringLiteral { s ->
-                            val upper = s.uppercase()
-                            upper.contains("CREATE TABLE") || upper.contains("DROP TABLE") ||
-                            upper.contains("ALTER TABLE") || upper.contains("CREATE INDEX") ||
-                            upper.contains("PRAGMA ")
-                        }
-                if (isDdlOrMigration) {
-                    continue
-                }
-            }
-
             val args = analyzer.getInvocationArgs(cs.instruction)
             val sqlReg = args.getOrNull(1)
 
@@ -57,47 +38,23 @@ class SqlInjectionRule : Rule {
                     continue
                 }
 
-                // Trace back where sqlReg was defined
-                var isBuilderToString = false
-                var trackedReg = sqlReg
-                for (k in (cs.instructionIndex - 1) downTo 0) {
-                    val inst = cs.method.implementation?.instructions?.elementAtOrNull(k) ?: break
-                    if (inst is com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction &&
-                        (inst.opcode == Opcode.MOVE_RESULT || inst.opcode == Opcode.MOVE_RESULT_OBJECT) &&
-                        inst.registerA == trackedReg
-                    ) {
-                        val callInst = if (k > 0) cs.method.implementation?.instructions?.elementAtOrNull(k - 1) else null
-                        if (callInst is com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction) {
-                            val mRef = callInst.reference as? com.android.tools.smali.dexlib2.iface.reference.MethodReference
-                            if (mRef != null && mRef.name == "toString" && mRef.definingClass.contains("StringBuilder")) {
-                                isBuilderToString = true
-                            }
-                        }
-                        break
-                    }
-                    if (inst is com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction &&
-                        (inst.opcode == Opcode.MOVE || inst.opcode == Opcode.MOVE_OBJECT ||
-                         inst.opcode == Opcode.MOVE_16 || inst.opcode == Opcode.MOVE_OBJECT_16 ||
-                         inst.opcode == Opcode.MOVE_FROM16 || inst.opcode == Opcode.MOVE_OBJECT_FROM16) &&
-                        inst.registerA == trackedReg
-                    ) {
-                        trackedReg = inst.registerB
-                        continue
-                    }
-                    if (inst.opcode.setsRegister() || inst.opcode.setsWideRegister()) {
-                        val destReg = when (inst) {
-                            is com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction -> inst.registerA
-                            is com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction -> inst.registerA
-                            is com.android.tools.smali.dexlib2.iface.instruction.ThreeRegisterInstruction -> inst.registerA
-                            else -> null
-                        }
-                        if (destReg == trackedReg) {
-                            break
+                // If constructed via StringBuilder, inspect the SQL argument of that specific call site
+                val sbInfo = analyzer.getStringBuilderPrefixAndTaint(sqlReg, cs.instructionIndex)
+                if (sbInfo != null) {
+                    val (prefix, hasTaint) = sbInfo
+                    if (prefix != null) {
+                        val upper = prefix.trim().uppercase()
+                        val isDdl = upper.startsWith("CREATE TABLE") || upper.startsWith("DROP TABLE") ||
+                                upper.startsWith("ALTER TABLE") || upper.startsWith("CREATE INDEX") ||
+                                upper.startsWith("PRAGMA ")
+                        // Skip only when the literal statement prefix is a DDL keyword AND no dynamic arguments are tainted
+                        if (isDdl && !hasTaint) {
+                            continue
                         }
                     }
                 }
 
-                if (isBuilderToString && analyzer.isAllStringBuilderAppendsConstant(cs.instructionIndex)) {
+                if (analyzer.isAllStringBuilderAppendsConstant(cs.instructionIndex)) {
                     continue
                 }
             }
@@ -255,8 +212,11 @@ class HardcodedSecretsRule : Rule {
             }
             if (matchedKnown) continue
 
-            // 2. High-entropy token check for standalone strings
-            if (!seenTokens.contains(literal) && literal.length in 28..80) {
+            // 2. High-entropy token check for standalone strings in application code.
+            // Exclude third-party library classes from generic entropy scans (they contain obfuscated tables, internal hashes),
+            // while preserving known-format secret patterns everywhere.
+            val isLibrary = KnownLibraries.isLibraryClass(so.callerClass)
+            if (!isLibrary && !seenTokens.contains(literal) && literal.length in 28..80) {
                 if (isPotentialGenericSecret(literal)) {
                     val entropy = calculateShannonEntropy(literal)
                     if (entropy > 4.5) {
@@ -300,10 +260,14 @@ class HardcodedSecretsRule : Rule {
         if (s.contains(' ') || s.contains('\t') || s.contains('\n')) return false
 
         // Code syntax, CSS, JSON/XML fragments, format strings are not API tokens
-        if (s.contains('(') || s.contains(')') || s.contains('#') ||
-            s.contains('{') || s.contains('}') || s.contains('[') || s.contains(']') ||
-            s.contains('*') || s.contains(';') || s.contains(':') || s.contains('<') ||
-            s.contains('>') || s.contains('"') || s.contains('\'')) return false
+        // Credential pairs like client_id:client_secret are allowed through
+        val isCredentialPair = s.matches(Regex("""^\w{8,}:\w{16,}$"""))
+        if (!isCredentialPair) {
+            if (s.contains('(') || s.contains(')') || s.contains('#') ||
+                s.contains('{') || s.contains('}') || s.contains('[') || s.contains(']') ||
+                s.contains('*') || s.contains(';') || s.contains(':') || s.contains('<') ||
+                s.contains('>') || s.contains('"') || s.contains('\'')) return false
+        }
 
         // Sequential alphabet lookup tables (Base64/Hex encoding tables)
         if (s.startsWith("ABCDEFGHIJKLMNOP") || s.startsWith("abcdefghijklmnop") ||

@@ -4,11 +4,13 @@ import com.android.tools.smali.dexlib2.iface.instruction.NarrowLiteralInstructio
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.reference.StringReference
+import io.apkwarden.core.dex.ClassHierarchy
 import io.apkwarden.core.dex.MethodAnalyzer
 import io.apkwarden.core.dex.RegisterValue
 import io.apkwarden.core.dex.TaintSource
 import io.apkwarden.core.model.Confidence
 import io.apkwarden.core.model.Finding
+import io.apkwarden.core.model.KnownLibraries
 import io.apkwarden.core.model.Reachability
 import io.apkwarden.core.model.Severity
 
@@ -22,6 +24,43 @@ class DirtyStreamTraversalRule : Rule {
     override val description = "Application reads an incoming content stream via ContentResolver.openInputStream and writes to a destination file derived from Uri.getLastPathSegment() or displayName without canonical path validation, allowing file overwrite."
     override val targetSinks = setOf("openInputStream")
 
+    private fun hasFileWriteOperation(analyzer: MethodAnalyzer): Boolean {
+        return analyzer.containsCallTo("java.io.File", "<init>") ||
+                analyzer.containsCallTo("java.io.FileOutputStream", "<init>") ||
+                analyzer.containsCallTo("java.io.RandomAccessFile", "<init>") ||
+                analyzer.containsCallTo("okio.Okio", "sink") ||
+                analyzer.containsCallTo("android.content.ContentResolver", "openOutputStream") ||
+                analyzer.containsCallTo("kotlin.io.ByteStreamsKt", "copyTo") ||
+                analyzer.containsCallTo("android.content.Context", "openFileOutput") ||
+                analyzer.containsCallTo("java.nio.file.Files", "write") ||
+                analyzer.containsCallTo("java.nio.file.Files", "copy") ||
+                analyzer.containsCallTo("java.nio.file.Files", "newOutputStream")
+    }
+
+    private fun checkWriteOneHopDeep(cs: io.apkwarden.core.dex.CallSite, analyzer: MethodAnalyzer, context: AnalysisContext): Boolean {
+        if (hasFileWriteOperation(analyzer)) return true
+
+        // Look 1 call deep into app-owned callees (e.g. saveToCache(name, stream))
+        for (inst in analyzer.instructions) {
+            if (inst is ReferenceInstruction) {
+                val ref = inst.reference as? com.android.tools.smali.dexlib2.iface.reference.MethodReference ?: continue
+                val calleeClass = ClassHierarchy.normalizeType(ref.definingClass)
+                if (!KnownLibraries.isLibraryClass(calleeClass)) {
+                    val calleeDef = context.dexIndex.classDefs[calleeClass]
+                        ?: context.dexIndex.classDefs["L${calleeClass.replace('.', '/')};"]
+                    val calleeMethod = calleeDef?.methods?.find { it.name == ref.name }
+                    if (calleeMethod != null) {
+                        val calleeAnalyzer = MethodAnalyzer(calleeMethod)
+                        if (hasFileWriteOperation(calleeAnalyzer)) {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        return false
+    }
+
     override fun analyze(context: AnalysisContext): List<Finding> {
         val findings = mutableListOf<Finding>()
         val openStreamCalls = context.dexIndex.findCallSites("android.content.ContentResolver", "openInputStream")
@@ -31,18 +70,15 @@ class DirtyStreamTraversalRule : Rule {
             if (reachability == Reachability.UNREACHABLE) continue
 
             val analyzer = MethodAnalyzer(cs.method)
-            val hasDisplayName = analyzer.containsStringLiteral { it == "_display_name" || it == "display_name" }
+            val hasDisplayName = analyzer.containsStringLiteral {
+                it.contains("_display_name", ignoreCase = true) || it.equals("display_name", ignoreCase = true)
+            } || analyzer.containsFieldReference("android.provider.OpenableColumns", "DISPLAY_NAME")
             val hasLastPathSegment = analyzer.containsCallTo("android.net.Uri", "getLastPathSegment") ||
                     analyzer.containsCallTo("android.net.Uri", "getPath") || hasDisplayName
             val hasSanitization = analyzer.hasPathSanitization()
 
             val isDirectExported = reachability == Reachability.DIRECT
-            val hasFileDestination = analyzer.containsCallTo("java.io.File", "<init>") ||
-                    analyzer.containsCallTo("java.io.FileOutputStream", "<init>") ||
-                    analyzer.containsCallTo("android.content.Context", "openFileOutput") ||
-                    analyzer.containsCallTo("java.nio.file.Files", "write") ||
-                    analyzer.containsCallTo("java.nio.file.Files", "copy") ||
-                    analyzer.containsCallTo("java.nio.file.Files", "newOutputStream")
+            val hasFileDestination = checkWriteOneHopDeep(cs, analyzer, context)
 
             if (hasLastPathSegment && !hasSanitization && (isDirectExported || hasFileDestination)) {
                 val (title, severity, confidence, desc) = when (reachability) {

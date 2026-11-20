@@ -29,10 +29,25 @@ class WebViewArbitraryUrlRule : Rule {
 
             val analyzer = MethodAnalyzer(cs.method)
 
-            // Dedicated in-app browser activities (e.g. WebBrowserActivity) are designed to load user/intent URLs.
-            // Exclude from vulnerability findings unless dangerous settings (file access, universal access) are present.
-            if (cs.callerClass.lowercase().contains("browser")) {
-                continue
+            // Dedicated in-app browser activities (e.g. WebBrowserActivity) are designed to load web links.
+            // Only exclude when:
+            // 1. The class name strictly ends in Browser or BrowserActivity
+            // 2. The component does NOT expose a JS interface, setAllowFileAccess(true), or universal file access
+            // 3. The URL does NOT come directly from an exported entry point
+            val simpleName = cs.callerClass.removePrefix("L").removeSuffix(";").substringAfterLast('/').substringAfterLast('$')
+            val isBrowserClass = simpleName.endsWith("Browser") || simpleName.endsWith("BrowserActivity")
+            if (isBrowserClass && reachability != Reachability.DIRECT) {
+                val hasJsInterface = context.dexIndex.findCallSites("android.webkit.WebView", "addJavascriptInterface")
+                    .any { it.callerClass == cs.callerClass }
+                val hasFileAccess = context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowFileAccess")
+                    .any { it.callerClass == cs.callerClass } ||
+                    context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowUniversalAccessFromFileURLs")
+                    .any { it.callerClass == cs.callerClass } ||
+                    context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowFileAccessFromFileURLs")
+                    .any { it.callerClass == cs.callerClass }
+                if (!hasJsInterface && !hasFileAccess) {
+                    continue
+                }
             }
 
             val args = analyzer.getInvocationArgs(cs.instruction)
@@ -174,32 +189,103 @@ class JavascriptInterfaceRule : Rule {
         for (cs in jsInterfaceCalls) {
             val reachability = context.dexIndex.checkReachability(cs.callerClass, context.attackSurface)
             val analyzer = MethodAnalyzer(cs.method)
-            val isRceRisk = context.attackSurface.minSdk < 17
-            val severity = if (isRceRisk) Severity.CRITICAL else Severity.INFO
-            val confidence = if (isRceRisk) Confidence.CERTAIN else Confidence.TENTATIVE
+            val isRceRisk = context.attackSurface.minSdk < 17 || context.attackSurface.targetSdk < 17
 
-            findings.add(
-                Finding(
-                    id = id,
-                    title = if (isRceRisk) "RCE via WebView addJavascriptInterface on minSdk < 17" else "JavaScript Interface Attached to WebView (Hardening Notice)",
-                    severity = severity,
-                    confidence = confidence,
-                    cwe = "CWE-94",
-                    owasp = "M4: Insufficient Input/Output Validation",
-                    description = "Class '${cs.callerClass}#${cs.callerMethod}' calls 'WebView.addJavascriptInterface'. " +
-                            if (isRceRisk) "Because minSdk (${context.attackSurface.minSdk}) is below 17, methods can be invoked via Java reflection to execute arbitrary shell commands."
-                            else "On minSdk >= 17, Java reflection is restricted by the OS runtime. Ensure only whitelisted, strictly HTTPS origins can load in the WebView, and only expose minimal, non-sensitive methods.",
-                    remediation = if (isRceRisk) "Raise minSdk to 17+ and annotate methods with @JavascriptInterface."
-                    else "Ensure only whitelisted, strictly HTTPS origins can load in the WebView, and only expose minimal, non-sensitive methods.",
-                    component = cs.callerClass,
-                    targetClass = cs.callerClass,
-                    targetMethod = cs.callerMethod,
-                    methodDescriptor = analyzer.getMethodDescriptor(),
-                    evidence = "Call to WebView.addJavascriptInterface in ${cs.callerClass}",
-                    lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
-                    reachability = reachability
+            if (isRceRisk) {
+                findings.add(
+                    Finding(
+                        id = id,
+                        title = "RCE via WebView addJavascriptInterface on minSdk/targetSdk < 17",
+                        severity = Severity.CRITICAL,
+                        confidence = Confidence.CERTAIN,
+                        cwe = "CWE-94",
+                        owasp = "M4: Insufficient Input/Output Validation",
+                        description = "Class '${cs.callerClass}#${cs.callerMethod}' calls 'WebView.addJavascriptInterface'. Because minSdk (${context.attackSurface.minSdk}) or targetSdk (${context.attackSurface.targetSdk}) is below 17, methods can be invoked via Java reflection to execute arbitrary shell commands.",
+                        remediation = "Raise targetSdk and minSdk to 17+ and annotate methods with @JavascriptInterface.",
+                        component = cs.callerClass,
+                        targetClass = cs.callerClass,
+                        targetMethod = cs.callerMethod,
+                        methodDescriptor = analyzer.getMethodDescriptor(),
+                        evidence = "Call to WebView.addJavascriptInterface with targetSdk=${context.attackSurface.targetSdk}, minSdk=${context.attackSurface.minSdk}",
+                        lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                        reachability = reachability
+                    )
                 )
-            )
+            } else {
+                val hasFileAccess = context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowFileAccess")
+                    .any { it.callerClass == cs.callerClass } ||
+                    context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowUniversalAccessFromFileURLs")
+                    .any { it.callerClass == cs.callerClass } ||
+                    context.dexIndex.findCallSites("android.webkit.WebSettings", "setAllowFileAccessFromFileURLs")
+                    .any { it.callerClass == cs.callerClass }
+                val hasCleartextUrl = analyzer.containsStringLiteral { it.startsWith("http://") }
+                val hasIntentUrl = analyzer.containsCallTo("android.content.Intent", "getStringExtra") ||
+                    analyzer.containsCallTo("android.content.Intent", "getData") ||
+                    analyzer.containsCallTo("android.content.Intent", "getDataString")
+                val isExportedReachable = reachability == Reachability.DIRECT || reachability == Reachability.REACHABLE
+
+                if (hasFileAccess || (isExportedReachable && (hasCleartextUrl || hasIntentUrl))) {
+                    findings.add(
+                        Finding(
+                            id = id,
+                            title = "High Risk: WebView JavaScript Bridge Exposed to Insecure Content",
+                            severity = Severity.HIGH,
+                            confidence = Confidence.FIRM,
+                            cwe = "CWE-94",
+                            owasp = "M4: Insufficient Input/Output Validation",
+                            description = "Class '${cs.callerClass}#${cs.callerMethod}' exposes a native JavaScript interface while enabling local file access or loading untrusted external/cleartext content. Malicious web pages can abuse the exposed bridge to interact with native functionality.",
+                            remediation = "Disable file access, ensure only strictly HTTPS whitelisted domains are loaded, and avoid exposing sensitive methods via JavascriptInterface.",
+                            component = cs.callerClass,
+                            targetClass = cs.callerClass,
+                            targetMethod = cs.callerMethod,
+                            methodDescriptor = analyzer.getMethodDescriptor(),
+                            evidence = "addJavascriptInterface in ${cs.callerClass} with fileAccess=$hasFileAccess, cleartext=$hasCleartextUrl, intentUrl=$hasIntentUrl, exported=$isExportedReachable",
+                            lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                            reachability = reachability
+                        )
+                    )
+                } else if (isExportedReachable || hasCleartextUrl || hasIntentUrl) {
+                    findings.add(
+                        Finding(
+                            id = id,
+                            title = "JavaScript Interface Exposed on Reachable / External WebView",
+                            severity = Severity.MEDIUM,
+                            confidence = Confidence.FIRM,
+                            cwe = "CWE-94",
+                            owasp = "M4: Insufficient Input/Output Validation",
+                            description = "Class '${cs.callerClass}#${cs.callerMethod}' attaches a JavaScript interface to a WebView that is reachable from an exported component or processes dynamic intent URLs.",
+                            remediation = "Ensure all loaded URLs validate domain origin against a strict HTTPS allowlist before loading in WebView.",
+                            component = cs.callerClass,
+                            targetClass = cs.callerClass,
+                            targetMethod = cs.callerMethod,
+                            methodDescriptor = analyzer.getMethodDescriptor(),
+                            evidence = "addJavascriptInterface in ${cs.callerClass} reachable=${reachability}",
+                            lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                            reachability = reachability
+                        )
+                    )
+                } else {
+                    findings.add(
+                        Finding(
+                            id = id,
+                            title = "JavaScript Interface Attached to WebView (Hardening Notice)",
+                            severity = Severity.INFO,
+                            confidence = Confidence.TENTATIVE,
+                            cwe = "CWE-94",
+                            owasp = "M4: Insufficient Input/Output Validation",
+                            description = "Class '${cs.callerClass}#${cs.callerMethod}' calls 'WebView.addJavascriptInterface'. On minSdk >= 17 and targetSdk >= 17, Java reflection is restricted by the OS runtime. Ensure only whitelisted, strictly HTTPS origins can load in the WebView, and only expose minimal, non-sensitive methods.",
+                            remediation = "Ensure only whitelisted, strictly HTTPS origins can load in the WebView, and only expose minimal, non-sensitive methods.",
+                            component = cs.callerClass,
+                            targetClass = cs.callerClass,
+                            targetMethod = cs.callerMethod,
+                            methodDescriptor = analyzer.getMethodDescriptor(),
+                            evidence = "Call to WebView.addJavascriptInterface in ${cs.callerClass}",
+                            lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                            reachability = reachability
+                        )
+                    )
+                }
+            }
         }
         return findings
     }

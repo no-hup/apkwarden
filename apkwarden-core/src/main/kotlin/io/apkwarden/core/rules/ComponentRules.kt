@@ -100,8 +100,27 @@ class IntentRedirectionRule : Rule {
                             )
                         }
                     }
-                    // NEVER emit an Intent Redirection finding directly on a third-party framework or library class
-                    // when no application caller was identified.
+                    if (appCallers.isEmpty()) {
+                        findings.add(
+                            Finding(
+                                id = id,
+                                title = "Unresolved Library Intent Forwarding (Informational)",
+                                severity = Severity.INFO,
+                                confidence = Confidence.TENTATIVE,
+                                cwe = "CWE-926",
+                                owasp = "M4: Insufficient Input/Output Validation",
+                                description = "Library class '${cs.callerClass}#${cs.callerMethod}' forwards an Intent to '${cs.targetClass}.${cs.targetMethod}'. No direct application-owned caller was statically identified within 2 call hops.",
+                                remediation = "Ensure any application components invoking library navigation or intent forwarders supply validated, explicit Intents.",
+                                component = cs.callerClass,
+                                targetClass = cs.callerClass,
+                                targetMethod = cs.callerMethod,
+                                methodDescriptor = analyzer.getMethodDescriptor(),
+                                evidence = "Unresolved intent forwarding in ${cs.callerClass}#${cs.callerMethod}",
+                                lineOrOffset = "Instruction offset: ${cs.instructionIndex}",
+                                reachability = Reachability.UNKNOWN
+                            )
+                        )
+                    }
                     continue
                 }
 

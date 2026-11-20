@@ -25,7 +25,7 @@ enum class TaintSource {
 
 class MethodAnalyzer(private val method: Method) {
 
-    private val instructions: List<Instruction> = method.implementation?.instructions?.toList() ?: emptyList()
+    val instructions: List<Instruction> = method.implementation?.instructions?.toList() ?: emptyList()
     private val registerStatesAtInstruction: MutableList<Map<Int, RegisterValue>> = mutableListOf()
 
     init {
@@ -191,6 +191,114 @@ class MethodAnalyzer(private val method: Method) {
                 ref != null && predicate(ref.string)
             } else false
         }
+    }
+
+    fun containsFieldReference(className: String, fieldName: String): Boolean {
+        val normTarget = ClassHierarchy.normalizeType(className)
+        return instructions.any { inst ->
+            if (inst is ReferenceInstruction) {
+                val ref = inst.reference as? com.android.tools.smali.dexlib2.iface.reference.FieldReference
+                if (ref != null) {
+                    val c = ClassHierarchy.normalizeType(ref.definingClass)
+                    (c == normTarget || c.endsWith(normTarget)) && ref.name == fieldName
+                } else false
+            } else false
+        }
+    }
+
+    /**
+     * Inspects the StringBuilder or concatenation that produced the register at [instructionIndex].
+     * Returns a pair of:
+     * - prefix: the first string constant appended (if any)
+     * - hasTaintedArgs: whether any value appended to this StringBuilder is tainted
+     */
+    fun getStringBuilderPrefixAndTaint(reg: Int, instructionIndex: Int): Pair<String?, Boolean>? {
+        var trackedReg = reg
+        var foundToStringIndex = -1
+        var sbReg = -1
+
+        for (k in (instructionIndex - 1) downTo 0) {
+            val inst = instructions.elementAtOrNull(k) ?: break
+            if (inst is OneRegisterInstruction &&
+                (inst.opcode == Opcode.MOVE_RESULT || inst.opcode == Opcode.MOVE_RESULT_OBJECT) &&
+                inst.registerA == trackedReg
+            ) {
+                val callInst = if (k > 0) instructions.elementAtOrNull(k - 1) else null
+                if (callInst is ReferenceInstruction) {
+                    val mRef = callInst.reference as? MethodReference
+                    if (mRef != null && mRef.name == "toString" && mRef.definingClass.contains("StringBuilder")) {
+                        foundToStringIndex = k - 1
+                        val callArgs = getInvocationArgs(callInst)
+                        if (callArgs.isNotEmpty()) {
+                            sbReg = callArgs[0]
+                        }
+                    }
+                }
+                break
+            }
+            if (inst is TwoRegisterInstruction &&
+                (inst.opcode == Opcode.MOVE || inst.opcode == Opcode.MOVE_OBJECT ||
+                 inst.opcode == Opcode.MOVE_16 || inst.opcode == Opcode.MOVE_OBJECT_16 ||
+                 inst.opcode == Opcode.MOVE_FROM16 || inst.opcode == Opcode.MOVE_OBJECT_FROM16) &&
+                inst.registerA == trackedReg
+            ) {
+                trackedReg = inst.registerB
+                continue
+            }
+            if (inst.opcode.setsRegister() || inst.opcode.setsWideRegister()) {
+                val destReg = when (inst) {
+                    is OneRegisterInstruction -> inst.registerA
+                    is TwoRegisterInstruction -> inst.registerA
+                    is ThreeRegisterInstruction -> inst.registerA
+                    else -> null
+                }
+                if (destReg == trackedReg) {
+                    break
+                }
+            }
+        }
+
+        if (foundToStringIndex == -1 || sbReg == -1) {
+            return null
+        }
+
+        // Trace back to the new-instance for this specific StringBuilder instance
+        var sbStartIndex = 0
+        for (k in (foundToStringIndex - 1) downTo 0) {
+            val inst = instructions[k]
+            if (inst is OneRegisterInstruction && inst.opcode == Opcode.NEW_INSTANCE && inst.registerA == sbReg) {
+                sbStartIndex = k
+                break
+            }
+        }
+
+        var firstStringConstant: String? = null
+        var hasTaint = false
+
+        for (i in sbStartIndex until foundToStringIndex) {
+            val inst = instructions[i]
+            if (inst is ReferenceInstruction) {
+                val ref = inst.reference as? MethodReference ?: continue
+                val defClass = ClassHierarchy.normalizeType(ref.definingClass)
+                if (defClass == "java.lang.StringBuilder" && ref.name == "append") {
+                    val args = getInvocationArgs(inst)
+                    if (args.isNotEmpty() && args[0] == sbReg) {
+                        if (args.size >= 2) {
+                            val argVal = getRegisterValue(args[1], i)
+                            if (firstStringConstant == null && argVal is RegisterValue.StringConstant) {
+                                firstStringConstant = argVal.value
+                            }
+                            val isConstant = argVal is RegisterValue.StringConstant || argVal is RegisterValue.IntConstant
+                            if (!isConstant) {
+                                hasTaint = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return Pair(firstStringConstant, hasTaint)
     }
 
     /**
