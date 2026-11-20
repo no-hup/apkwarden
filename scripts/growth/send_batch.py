@@ -107,6 +107,7 @@ if __name__ == "__main__":
     import time
     parser = argparse.ArgumentParser(description="Dispatch outreach emails")
     parser.add_argument("--repo", help="Single repo to send to")
+    parser.add_argument("--high-urgency", action="store_true", help="Dispatch high-urgency 2.0 candidates (PENDING_APPROVAL_HIGH_URGENCY)")
     parser.add_argument("--limit", type=int, default=20, help="Number of pending drafts to send")
     parser.add_argument("--dry-run", action="store_true", help="Print command without sending")
     parser.add_argument("--draft", action="store_true", help="Create as Gmail draft instead of sending")
@@ -123,6 +124,16 @@ if __name__ == "__main__":
             JOIN maintainers m ON d.maintainer_login = m.login
             WHERE d.repo_full_name = ? AND m.email IS NOT NULL AND m.email != ''
         """, (args.repo,))
+    elif args.high_urgency:
+        cur.execute("""
+            SELECT d.repo_full_name, m.email, d.draft_path
+            FROM drafts d
+            JOIN maintainers m ON d.maintainer_login = m.login
+            WHERE d.status = 'PENDING_APPROVAL_HIGH_URGENCY'
+              AND m.email IS NOT NULL AND m.email != ''
+            ORDER BY d.id ASC
+            LIMIT ?
+        """, (args.limit,))
     else:
         cur.execute("""
             SELECT d.repo_full_name, m.email, d.draft_path
