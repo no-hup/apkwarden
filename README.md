@@ -89,7 +89,14 @@ curl -sSL -O https://github.com/no-hup/apkwarden/releases/latest/download/apkwar
 java -jar apkwarden-all.jar --help
 ```
 
-### 4. Docker (Multi-Arch)
+### 4. GitHub Action (CI/CD PR Gate)
+Run directly in your CI pipelines with zero local setup:
+```yaml
+- uses: no-hup/apkwarden@v0.1.0
+```
+*(See [GitHub Actions Integration](#-github-actions-integration) below for the complete PR gate workflow).*
+
+### 5. Docker (Multi-Arch)
 ```bash
 docker run --rm -v $(pwd):/workspace ghcr.io/no-hup/apkwarden:latest scan /workspace/app-release.apk
 ```
