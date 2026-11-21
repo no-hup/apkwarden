@@ -1,5 +1,5 @@
 name: 'APKWarden Android Security Scanner'
-description: 'Fast, reachability-first Android security analyzer. Zero cloud uploads, zero decompilation noise, PR attack surface diffing, and SARIF 2.1.0 reporting.'
+description: 'Fast, local Android security scanner with reachability gating, PR attack surface diffing, and SARIF 2.1.0 reporting.'
 author: 'APKWarden Contributors'
 
 branding:
